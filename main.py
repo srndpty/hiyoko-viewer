@@ -3,6 +3,23 @@ import os
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QFileDialog
 from PyQt6.QtGui import QPixmap, QKeyEvent
 from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
+
+
+# 画像をバックグラウンドで読み込むためのワーカースレッド
+class ImageLoader(QObject):
+    # 読み込み完了時にQPixmapを渡すシグナル
+    finished = pyqtSignal(QPixmap)
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        # ここが別スレッドで実行される重い処理
+        pixmap = QPixmap(self.file_path)
+        # 処理が終わったらシグナルを発信
+        self.finished.emit(pixmap)
 
 class ImageViewer(QMainWindow):
     def __init__(self):
@@ -57,12 +74,41 @@ class ImageViewer(QMainWindow):
             self.load_image_by_index()
 
     def load_image_by_index(self):
-        if 0 <= self.current_index < len(self.image_files):
-            file_path = self.image_files[self.current_index]
-            pixmap = QPixmap(file_path)
+        if not (0 <= self.current_index < len(self.image_files)):
+            return
+
+        file_path = self.image_files[self.current_index]
+        self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
+        self.image_label.setText("読み込み中...") # UIは固まらないことをユーザーに示す
+
+        # --- 非同期読み込みのセットアップ ---
+        self.thread = QThread()
+        self.worker = ImageLoader(file_path)
+        self.worker.moveToThread(self.thread)
+
+        # スレッドが開始したらworkerのrunを実行
+        self.thread.started.connect(self.worker.run)
+        # workerが終わったらスレッドを終了し、後片付け
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+
+        # workerのfinishedシグナルを、画像を表示するメソッドに接続
+        self.worker.finished.connect(self.update_image_display)
+
+        # スレッドを開始！
+        self.thread.start()
+        
+    def update_image_display(self, pixmap):
+        # このメソッドはメインスレッドで実行される
+        if pixmap.isNull():
+            self.image_label.setText("画像の読み込みに失敗しました")
+        else:
             self.image_label.setPixmap(pixmap)
-            # タイトルにファイル名と枚数を表示
-            self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
+        
+        # タイトルを更新
+        file_path = self.image_files[self.current_index]
+        self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
 
     # キーが押されたときのイベントを処理
     def keyPressEvent(self, event: QKeyEvent):
