@@ -213,20 +213,26 @@ class ImageViewer(QMainWindow):
         if self.is_loading:
             return
         
-        file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", "画像ファイル (*.png *.jpg *.jpeg *.bmp)")
+        supported_extensions = [
+            '.bmp', '.cur', '.gif', '.icns', '.ico', '.jfif', '.jpeg', '.jpg', 
+            '.pbm', '.pdf', '.pgm', '.png', '.ppm', '.svg', '.svgz', '.tga', 
+            '.tif', '.tiff', '.wbmp', '.webp', '.xbm', '.xpm'
+        ]
+
+        filter_extensions = " ".join([f"*.{ext[1:]}" for ext in supported_extensions])
+        dialog_filter = f"対応画像ファイル ({filter_extensions});;すべてのファイル (*)"
+
+        file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
 
         if file_path:
             directory = os.path.dirname(file_path)
             all_files = os.listdir(directory)
-            
-            image_extensions = ['.png', '.jpg', '.jpeg', '.bmp']
 
             # ★修正点1: リストを作成する際に、各パスをnormcaseで正規化する
             self.image_files = sorted([
                 os.path.normcase(os.path.join(directory, f)) 
-                for f in all_files if f.lower().endswith(tuple(image_extensions))
+                for f in all_files if f.lower().endswith(tuple(supported_extensions))
             ])
-            
             # ★修正点2: 検索する側のパスもnormpathに加えてnormcaseで正規化する
             normalized_path = os.path.normcase(os.path.normpath(file_path))
 
@@ -238,9 +244,13 @@ class ImageViewer(QMainWindow):
             #     print(p) # リストの中身を一つずつ全部表示してみる
             # print("--------------------")
             
-            self.current_index = self.image_files.index(normalized_path)
-            self.load_image_by_index()
-
+            try:
+                self.current_index = self.image_files.index(normalized_path)
+                self.load_image_by_index()
+            except ValueError:
+                print(f"エラー: 正規化されたパス '{normalized_path}' がリストに見つかりませんでした。")
+                self.image_label.setText("画像の読み込みに失敗しました。")
+                
     def load_image_by_index(self):
         # すでに読み込み中なら無視
         if self.is_loading:
@@ -290,7 +300,7 @@ class ImageViewer(QMainWindow):
             self.redraw_image()
 
         file_path = self.image_files[self.current_index]
-        self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
+        self.setWindowTitle(f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}")
         self.update_status_bar()
         self.is_loading = False
 
@@ -410,21 +420,6 @@ class ImageViewer(QMainWindow):
                 self.unsetCursor()
         else:
             super().mouseReleaseEvent(event)
-
-    # # ★ 修正点 1: wheelEvent をオーバーライド
-    # def wheelEvent(self, event):
-    #     # 読み込み中はスクロール操作を受け付けない
-    #     if self.is_loading:
-    #         event.ignore()
-    #         return
-            
-        # Ctrl+ホイールで拡縮機能を入れる場合、ここにもう一つのelse ifを追加
-        # elif event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-        #     # Ctrl+ホイールの拡縮処理
-        #     self.zoom_image(event.angleDelta().y()) # zoom_imageは別途実装
-        #     event.accept()
-        # else:
-        #     super().wheelEvent(event) # その他のケースは親クラスに任せる (通常は到達しない)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
