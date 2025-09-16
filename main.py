@@ -338,30 +338,32 @@ class ImageViewer(QMainWindow):
             event.ignore() # イベントを無視する
             return
         
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+        key = event.key()
+
+        if key == Qt.Key.Key_Space and not event.isAutoRepeat():
             self.space_key_pressed = True
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
-        elif event.key() == Qt.Key.Key_F11:
-            # F11キーで全画面表示をトグル
+
+        elif key == Qt.Key.Key_F11:
             if self.isFullScreen():
-                # 現在全画面なら、通常表示に戻す
                 self.showNormal()
             else:
-                # 現在通常表示なら、全画面表示にする
-                self.showFullScreen()        
-        elif event.key() == Qt.Key.Key_F:
+                self.showFullScreen()
+                
+        elif key == Qt.Key.Key_Escape:
+            self.close()
+
+        elif key == Qt.Key.Key_F:
             if self.fit_to_window:
-                # フィット → 原寸
                 self.fit_to_window = False
-                self.scale_factor = 1.0 # 原寸に戻す
+                self.scale_factor = 1.0
             else:
-                # 原寸 or ズーム → フィット
                 self.fit_to_window = True
-            
             self.redraw_image()
             self.update_status_bar()
+            
         else:
-            super().keyPressEvent(event) # 他のキーは親クラスに処理を任せる
+            super().keyPressEvent(event)
 
     # ★ 修正点 6: キーが離されたときのイベントハンドラを追加
     def keyReleaseEvent(self, event: QKeyEvent):
