@@ -28,6 +28,7 @@ class ImageViewer(QMainWindow):
         self.setGeometry(100, 100, 800, 600)
 
         # オリジナルの、リサイズされていないPixmapを保持する変数
+        self.is_loading = False
         self.original_pixmap = QPixmap()
 
         self.image_label = QLabel("ファイル > 開く(Ctrl+O) で画像を選択")
@@ -51,6 +52,10 @@ class ImageViewer(QMainWindow):
 
 
     def open_image(self):
+        # すでに読み込み中なら無視
+        if self.is_loading:
+            return
+        
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", "画像ファイル (*.png *.jpg *.jpeg *.bmp)")
 
         if file_path:
@@ -80,8 +85,14 @@ class ImageViewer(QMainWindow):
             self.load_image_by_index()
 
     def load_image_by_index(self):
+        # すでに読み込み中なら無視
+        if self.is_loading:
+            return
+        
         if not (0 <= self.current_index < len(self.image_files)):
             return
+
+        self.is_loading = True
 
         file_path = self.image_files[self.current_index]
         self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
@@ -118,6 +129,8 @@ class ImageViewer(QMainWindow):
         file_path = self.image_files[self.current_index]
         self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
 
+        self.is_loading = False
+
 
     # ★ 修正点 3: 新しいメソッドを追加
     def resize_image(self):
@@ -134,7 +147,7 @@ class ImageViewer(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         self.image_label.setPixmap(scaled_pixmap)
-        
+
     # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
     def resizeEvent(self, event):
         """ウィンドウがリサイズされたときに呼び出される"""
@@ -143,6 +156,11 @@ class ImageViewer(QMainWindow):
 
     # キーが押されたときのイベントを処理
     def keyPressEvent(self, event: QKeyEvent):
+        # すでに読み込み中なら無視
+        if self.is_loading:
+            event.ignore() # イベントを無視する
+            return
+        
         if event.key() == Qt.Key.Key_Right:
             if self.current_index < len(self.image_files) - 1:
                 self.current_index += 1
