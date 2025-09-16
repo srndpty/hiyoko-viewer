@@ -39,6 +39,7 @@ class ImageViewer(QMainWindow):
 
         # ★ 修正点 1: ズーム率を管理する変数を追加
         self.scale_factor = 1.0
+        self.current_filesize = 0
 
         # --- ウィジェットのセットアップ ---
         self.image_label = QLabel()
@@ -65,6 +66,32 @@ class ImageViewer(QMainWindow):
         open_action = file_menu.addAction("開く")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_image)
+
+    def update_status_bar(self):
+        if self.original_pixmap.isNull():
+            self.statusBar().clearMessage()
+            return
+
+        w = self.original_pixmap.width()
+        h = self.original_pixmap.height()
+        fs_mb = f"{self.current_filesize / (1024*1024):.2f}MB"
+        
+        zoom_percent = 0.0
+        if self.fit_to_window:
+            # フィットモードの場合、現在の表示倍率を計算
+            if w > 0 and h > 0:
+                vp_size = self.scroll_area.viewport().size()
+                scale_w = vp_size.width() / w
+                scale_h = vp_size.height() / h
+                zoom_percent = min(scale_w, scale_h) * 100
+        else:
+            # ズームモードの場合
+            zoom_percent = self.scale_factor * 100
+        
+        mode_str = "フィット" if self.fit_to_window else "フリー"
+        
+        status_text = f"サイズ: {w} x {h}  |  ファイルサイズ: {fs_mb}  |  ズーム: {zoom_percent:.1f}%  |  モード: {mode_str}"
+        self.statusBar().showMessage(status_text)
 
     def eventFilter(self, source, event):
         if event.type() == QEvent.Type.KeyPress:
@@ -137,6 +164,7 @@ class ImageViewer(QMainWindow):
                 # 5. スクロールバーを新しい位置にセット
                 h_bar.setValue(int(new_h_scroll))
                 v_bar.setValue(int(new_v_scroll))
+                self.update_status_bar()
 
                 return True
             
@@ -224,6 +252,11 @@ class ImageViewer(QMainWindow):
         self.is_loading = True
 
         file_path = self.image_files[self.current_index]
+        try:
+            self.current_filesize = os.path.getsize(file_path)
+        except OSError:
+            self.current_filesize = 0
+        
         self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
         self.image_label.setText("読み込み中...") # UIは固まらないことをユーザーに示す
 
@@ -255,8 +288,8 @@ class ImageViewer(QMainWindow):
 
         file_path = self.image_files[self.current_index]
         self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
+        self.update_status_bar()
         self.is_loading = False
-
 
     # ★ 修正点 3: 新しいメソッドを追加
     def redraw_image(self):
@@ -275,7 +308,6 @@ class ImageViewer(QMainWindow):
             )
             self.image_label.setPixmap(scaled_pixmap)
             # ステータスバーに表示モードを表示
-            self.statusBar().showMessage("表示モード: フィット")
         else:
             # --- 原寸/ズーム表示モード ---
             self.scroll_area.setWidgetResizable(False)
@@ -289,7 +321,6 @@ class ImageViewer(QMainWindow):
             self.image_label.setPixmap(scaled_pixmap)
             self.image_label.adjustSize()
             # ステータスバーに現在のズーム率を表示
-            self.statusBar().showMessage(f"ズーム: {self.scale_factor * 100:.0f}%")
 
     # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
     def resizeEvent(self, event):
@@ -310,8 +341,15 @@ class ImageViewer(QMainWindow):
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self.space_key_pressed = True
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
-        
-        if event.key() == Qt.Key.Key_F:
+        elif event.key() == Qt.Key.Key_F11:
+            # F11キーで全画面表示をトグル
+            if self.isFullScreen():
+                # 現在全画面なら、通常表示に戻す
+                self.showNormal()
+            else:
+                # 現在通常表示なら、全画面表示にする
+                self.showFullScreen()        
+        elif event.key() == Qt.Key.Key_F:
             if self.fit_to_window:
                 # フィット → 原寸
                 self.fit_to_window = False
@@ -321,10 +359,7 @@ class ImageViewer(QMainWindow):
                 self.fit_to_window = True
             
             self.redraw_image()
-        elif event.key() == Qt.Key.Key_Right:
-            self.show_next_image()
-        elif event.key() == Qt.Key.Key_Left:
-            self.show_prev_image()
+            self.update_status_bar()
         else:
             super().keyPressEvent(event) # 他のキーは親クラスに処理を任せる
 
