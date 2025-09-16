@@ -7,6 +7,21 @@
         mc:Ignorable="d"
         Title="MainWindow" Height="450" Width="800">
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- ボタン用の行 -->
+            <RowDefinition Height="*"/>    <!-- 画像表示用の行 -->
+        </Grid.RowDefinitions>
+
+        <!-- 上部のコントロール -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="5">
+            <Button Content="ファイルを開く" Width="100" Click="OpenFileButton_Click"/>
+        </StackPanel>
+
+        <!-- 画像表示エリア -->
+        <!-- Borderで囲むと背景色がわかりやすい -->
+        <Border Grid.Row="1" Background="Gray" Margin="5">
+            <Image x:Name="MainImage"/>
+        </Border>
 
     </Grid>
 </Window>

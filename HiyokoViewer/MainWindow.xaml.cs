@@ -1,23 +1,43 @@
-﻿using System.Text;
+﻿using Microsoft.Win32;
+using System;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 
-namespace HiyokoViewer;
-
-/// <summary>
-/// Interaction logic for MainWindow.xaml
-/// </summary>
-public partial class MainWindow : Window
+namespace HiyokoViewer
 {
-    public MainWindow()
+    public partial class MainWindow : Window
     {
-        InitializeComponent();
+        public MainWindow()
+        {
+            InitializeComponent();
+        }
+
+        private void OpenFileButton_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog();
+            // 対応するファイル形式のフィルタを設定
+            openFileDialog.Filter = "画像ファイル (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif|全てのファイル (*.*)|*.*";
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                // 選択されたファイルのパスから画像を読み込む
+                string filePath = openFileDialog.FileName;
+                try
+                {
+                    // BitmapImageを使って画像を読み込み、Imageコントロールに表示
+                    BitmapImage bitmap = new BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.UriSource = new Uri(filePath);
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad; // ファイルをロックしないようにすぐに読み込む
+                    bitmap.EndInit();
+
+                    MainImage.Source = bitmap;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("画像の読み込みに失敗しました: " + ex.Message);
+                }
+            }
+        }
     }
 }
