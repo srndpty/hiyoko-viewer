@@ -1,9 +1,10 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy
-from PyQt6.QtGui import QPixmap, QKeyEvent
-from PyQt6.QtCore import Qt
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy, QScrollArea
+)
+from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
 
 # 画像をバックグラウンドで読み込むためのワーカースレッド
 class ImageLoader(QObject):
@@ -23,34 +24,75 @@ class ImageLoader(QObject):
 class ImageViewer(QMainWindow):
     def __init__(self):
         super().__init__()
-        # ... (ステップ1の __init__ の中身はほぼ同じ) ...
         self.setWindowTitle("画像ビューア")
         self.setGeometry(100, 100, 800, 600)
 
+        # --- 状態管理フラグ ---
         self.fit_to_window = True
-        # オリジナルの、リサイズされていないPixmapを保持する変数
         self.is_loading = False
         self.original_pixmap = QPixmap()
+        
+        # ★ 修正点 1: パン操作用のフラグと変数を追加
+        self.space_key_pressed = False
+        self.is_panning = False
+        self.pan_last_mouse_pos = None
 
-        self.image_label = QLabel("ファイル > 開く(Ctrl+O) で画像を選択")
-        # ★ 修正点 1: setScaledContents は使わない
-        # self.image_label.setScaledContents(True) # ← この行を削除またはコメントアウト
-        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        # 画像が中央に表示されるようにアライメントを設定
+        # --- ウィジェットのセットアップ ---
+        self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setCentralWidget(self.image_label)
 
-        # 画像ファイルのリストと現在のインデックス
+        # ★ 修正点 2: QScrollArea を導入
+        self.scroll_area = QScrollArea()
+        # scroll_areaが表示するウィジェット(QLabel)が、表示領域より小さい場合に
+        # 中央に配置するように設定する
+        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_area.setWidget(self.image_label)
+        self.scroll_area.setWidgetResizable(True) # フィット表示時に重要
+        # ★ 修正点 1: scroll_areaにイベントフィルターをインストール
+        # これにより、scroll_area宛のイベントがeventFilterメソッドに送られるようになる
+        self.scroll_area.installEventFilter(self)
+        self.setCentralWidget(self.scroll_area)
+
+        # ... (メニューバー設定は変更なし) ...
         self.image_files = []
         self.current_index = -1
-        
-        # メニューバーを追加
         menu = self.menuBar()
         file_menu = menu.addMenu("ファイル")
         open_action = file_menu.addAction("開く")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_image)
 
+    # ★ 修正点 2: イベントフィルターの本体を実装
+    def eventFilter(self, source, event):
+        # イベントの発生元がscroll_areaで、かつキーが押されたイベントかチェック
+        if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
+            # 読み込み中は何も受け付けない
+            if self.is_loading:
+                return True # イベントを消費して伝播を止める
+
+            key = event.key()
+            # 左右キーだったら、画像切り替え処理を呼び出す
+            if key == Qt.Key.Key_Right:
+                self.show_next_image()
+                return True # イベントを消費して、スクロールバーに渡さない
+            elif key == Qt.Key.Key_Left:
+                self.show_prev_image()
+                return True # イベントを消費して、スクロールバーに渡さない
+
+        # 上記の条件に当てはまらない場合は、デフォルトのイベント処理に任せる
+        return super().eventFilter(source, event)
+    # ★ 修正点 3: コードの重複を避けるためにヘルパーメソッドを作成
+    def show_next_image(self):
+        if self.is_loading: return
+        if self.current_index < len(self.image_files) - 1:
+            self.current_index += 1
+            self.load_image_by_index()
+
+    def show_prev_image(self):
+        if self.is_loading: return
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.load_image_by_index()
 
     def open_image(self):
         # すでに読み込み中なら無視
@@ -120,16 +162,13 @@ class ImageViewer(QMainWindow):
     def update_image_display(self, pixmap):
         if pixmap.isNull():
             self.image_label.setText("画像の読み込みに失敗しました")
-            self.original_pixmap = QPixmap() # オリジナルもクリア
+            self.original_pixmap = QPixmap()
         else:
-            # ★ 修正点 2: オリジナルのPixmapを保持し、リサイズ処理を呼び出す
             self.original_pixmap = pixmap
             self.redraw_image()
-            
-        # タイトルを更新
+
         file_path = self.image_files[self.current_index]
         self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
-
         self.is_loading = False
 
 
@@ -140,23 +179,31 @@ class ImageViewer(QMainWindow):
             return
 
         if self.fit_to_window:
-            # --- フィット表示モードの処理 (従来通り) ---
+            # --- フィット表示モード ---
+            # ★ 修正点 3: フィット表示のロジックを更新
+            self.scroll_area.setWidgetResizable(True)
             scaled_pixmap = self.original_pixmap.scaled(
-                self.image_label.size(),
+                self.scroll_area.size(), # ラベルではなくスクロールエリアのサイズに合わせる
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             self.image_label.setPixmap(scaled_pixmap)
         else:
-            # --- 原寸表示モードの処理 ---
-            # オリジナルのPixmapをそのままセットするだけ
+            # --- 原寸表示モード ---
+            # ★ 修正点 4: 原寸表示のロジックを更新
+            self.scroll_area.setWidgetResizable(False)
             self.image_label.setPixmap(self.original_pixmap)
+            # ラベルのサイズを画像の原寸に合わせる(重要)
+            self.image_label.adjustSize()
 
     # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
     def resizeEvent(self, event):
         """ウィンドウがリサイズされたときに呼び出される"""
-        super().resizeEvent(event) # 親クラスのイベントハンドラを呼ぶ
-        self.redraw_image()       # 画像のリサイズ処理を呼び出す
+        super().resizeEvent(event)
+
+        # ウィンドウリサイズ時はフィット表示モードの時だけ再描画すれば良い
+        if self.fit_to_window:
+            self.redraw_image()
 
     # キーが押されたときのイベントを処理
     def keyPressEvent(self, event: QKeyEvent):
@@ -165,22 +212,64 @@ class ImageViewer(QMainWindow):
             event.ignore() # イベントを無視する
             return
         
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self.space_key_pressed = True
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        
         if event.key() == Qt.Key.Key_F:
             # フラグを反転させる
             self.fit_to_window = not self.fit_to_window
             # 表示を更新する
             self.redraw_image()
         elif event.key() == Qt.Key.Key_Right:
-            if self.current_index < len(self.image_files) - 1:
-                self.current_index += 1
-                self.load_image_by_index()
+            self.show_next_image()
         elif event.key() == Qt.Key.Key_Left:
-            if self.current_index > 0:
-                self.current_index -= 1
-                self.load_image_by_index()
+            self.show_prev_image()
         else:
             super().keyPressEvent(event) # 他のキーは親クラスに処理を任せる
 
+    # ★ 修正点 6: キーが離されたときのイベントハンドラを追加
+    def keyReleaseEvent(self, event: QKeyEvent):
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
+            self.space_key_pressed = False
+            self.is_panning = False # パン操作も強制終了
+            self.unsetCursor() # カーソルを元に戻す
+        else:
+            super().keyReleaseEvent(event)
+
+    # ★ 修正点 7: マウスイベントハンドラを3つ追加
+    def mousePressEvent(self, event):
+        # 原寸表示モード かつ スペースキーが押されている場合のみパン開始
+        if not self.fit_to_window and self.space_key_pressed:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.is_panning = True
+                self.pan_last_mouse_pos = event.pos()
+                self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.is_panning:
+            # マウスの移動量に応じてスクロールバーを動かす
+            delta = event.pos() - self.pan_last_mouse_pos
+            h_bar = self.scroll_area.horizontalScrollBar()
+            v_bar = self.scroll_area.verticalScrollBar()
+            h_bar.setValue(h_bar.value() - delta.x())
+            v_bar.setValue(v_bar.value() - delta.y())
+            self.pan_last_mouse_pos = event.pos()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.is_panning:
+            self.is_panning = False
+            # スペースキーがまだ押されていればOpenHandに、離されていれば元に戻す
+            if self.space_key_pressed:
+                self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+            else:
+                self.unsetCursor()
+        else:
+            super().mouseReleaseEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
