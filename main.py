@@ -1,10 +1,9 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QFileDialog
+from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy
 from PyQt6.QtGui import QPixmap, QKeyEvent
 from PyQt6.QtCore import Qt
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
-
 
 # 画像をバックグラウンドで読み込むためのワーカースレッド
 class ImageLoader(QObject):
@@ -28,8 +27,15 @@ class ImageViewer(QMainWindow):
         self.setWindowTitle("画像ビューア")
         self.setGeometry(100, 100, 800, 600)
 
+        # オリジナルの、リサイズされていないPixmapを保持する変数
+        self.original_pixmap = QPixmap()
+
         self.image_label = QLabel("ファイル > 開く(Ctrl+O) で画像を選択")
-        self.image_label.setScaledContents(True)
+        # ★ 修正点 1: setScaledContents は使わない
+        # self.image_label.setScaledContents(True) # ← この行を削除またはコメントアウト
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        # 画像が中央に表示されるようにアライメントを設定
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCentralWidget(self.image_label)
 
         # 画像ファイルのリストと現在のインデックス
@@ -98,17 +104,42 @@ class ImageViewer(QMainWindow):
 
         # スレッドを開始！
         self.thread.start()
-        
+
     def update_image_display(self, pixmap):
-        # このメソッドはメインスレッドで実行される
         if pixmap.isNull():
             self.image_label.setText("画像の読み込みに失敗しました")
+            self.original_pixmap = QPixmap() # オリジナルもクリア
         else:
-            self.image_label.setPixmap(pixmap)
-        
+            # ★ 修正点 2: オリジナルのPixmapを保持し、リサイズ処理を呼び出す
+            self.original_pixmap = pixmap
+            self.resize_image() # 新しいメソッドを呼び出す
+
         # タイトルを更新
         file_path = self.image_files[self.current_index]
         self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
+
+
+    # ★ 修正点 3: 新しいメソッドを追加
+    def resize_image(self):
+        """オリジナルのPixmapを、現在ラベルのサイズに合わせてリサイズし表示する"""
+        if self.original_pixmap.isNull():
+            return
+
+        # QPixmap.scaled() を使って、アスペクト比を維持してリサイズする
+        # Qt.AspectRatioMode.KeepAspectRatio: アスペクト比を維持
+        # Qt.TransformationMode.SmoothTransformation: 高品質なスケーリング
+        scaled_pixmap = self.original_pixmap.scaled(
+            self.image_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.image_label.setPixmap(scaled_pixmap)
+        
+    # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
+    def resizeEvent(self, event):
+        """ウィンドウがリサイズされたときに呼び出される"""
+        super().resizeEvent(event) # 親クラスのイベントハンドラを呼ぶ
+        self.resize_image()       # 画像のリサイズ処理を呼び出す
 
     # キーが押されたときのイベントを処理
     def keyPressEvent(self, event: QKeyEvent):
