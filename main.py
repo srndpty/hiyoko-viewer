@@ -195,16 +195,18 @@ class ImageViewer(QMainWindow):
     
     # ★ 修正点 3: コードの重複を避けるためにヘルパーメソッドを作成
     def show_next_image(self):
-        if self.is_loading: return
-        if self.current_index < len(self.image_files) - 1:
-            self.current_index += 1
-            self.load_image_by_index()
+        if self.is_loading or not self.image_files:
+            return
+
+        self.current_index = (self.current_index + 1) % len(self.image_files)
+        self.load_image_by_index()
 
     def show_prev_image(self):
-        if self.is_loading: return
-        if self.current_index > 0:
-            self.current_index -= 1
-            self.load_image_by_index()
+        if self.is_loading or not self.image_files:
+            return
+        
+        self.current_index = (self.current_index - 1) % len(self.image_files)
+        self.load_image_by_index()
 
     def open_image(self):
         # すでに読み込み中なら無視
@@ -250,6 +252,7 @@ class ImageViewer(QMainWindow):
         self.fit_to_window = True
         self.scale_factor = 1.0
         self.is_loading = True
+        print(f"Loading image at index {self.current_index}") # デバッグ用
 
         file_path = self.image_files[self.current_index]
         try:
@@ -349,7 +352,7 @@ class ImageViewer(QMainWindow):
                 self.showNormal()
             else:
                 self.showFullScreen()
-                
+
         elif key == Qt.Key.Key_Escape:
             self.close()
 
