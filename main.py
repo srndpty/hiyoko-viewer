@@ -27,6 +27,7 @@ class ImageViewer(QMainWindow):
         self.setWindowTitle("画像ビューア")
         self.setGeometry(100, 100, 800, 600)
 
+        self.fit_to_window = True
         # オリジナルの、リサイズされていないPixmapを保持する変数
         self.is_loading = False
         self.original_pixmap = QPixmap()
@@ -123,8 +124,8 @@ class ImageViewer(QMainWindow):
         else:
             # ★ 修正点 2: オリジナルのPixmapを保持し、リサイズ処理を呼び出す
             self.original_pixmap = pixmap
-            self.resize_image() # 新しいメソッドを呼び出す
-
+            self.redraw_image()
+            
         # タイトルを更新
         file_path = self.image_files[self.current_index]
         self.setWindowTitle(f"{os.path.basename(file_path)} ({self.current_index + 1}/{len(self.image_files)})")
@@ -133,26 +134,29 @@ class ImageViewer(QMainWindow):
 
 
     # ★ 修正点 3: 新しいメソッドを追加
-    def resize_image(self):
-        """オリジナルのPixmapを、現在ラベルのサイズに合わせてリサイズし表示する"""
+    def redraw_image(self):
+        """現在の表示モード（フィット/原寸）に応じて画像を描画する"""
         if self.original_pixmap.isNull():
             return
 
-        # QPixmap.scaled() を使って、アスペクト比を維持してリサイズする
-        # Qt.AspectRatioMode.KeepAspectRatio: アスペクト比を維持
-        # Qt.TransformationMode.SmoothTransformation: 高品質なスケーリング
-        scaled_pixmap = self.original_pixmap.scaled(
-            self.image_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.image_label.setPixmap(scaled_pixmap)
+        if self.fit_to_window:
+            # --- フィット表示モードの処理 (従来通り) ---
+            scaled_pixmap = self.original_pixmap.scaled(
+                self.image_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
+        else:
+            # --- 原寸表示モードの処理 ---
+            # オリジナルのPixmapをそのままセットするだけ
+            self.image_label.setPixmap(self.original_pixmap)
 
     # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
     def resizeEvent(self, event):
         """ウィンドウがリサイズされたときに呼び出される"""
         super().resizeEvent(event) # 親クラスのイベントハンドラを呼ぶ
-        self.resize_image()       # 画像のリサイズ処理を呼び出す
+        self.redraw_image()       # 画像のリサイズ処理を呼び出す
 
     # キーが押されたときのイベントを処理
     def keyPressEvent(self, event: QKeyEvent):
@@ -161,7 +165,12 @@ class ImageViewer(QMainWindow):
             event.ignore() # イベントを無視する
             return
         
-        if event.key() == Qt.Key.Key_Right:
+        if event.key() == Qt.Key.Key_F:
+            # フラグを反転させる
+            self.fit_to_window = not self.fit_to_window
+            # 表示を更新する
+            self.redraw_image()
+        elif event.key() == Qt.Key.Key_Right:
             if self.current_index < len(self.image_files) - 1:
                 self.current_index += 1
                 self.load_image_by_index()
