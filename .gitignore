@@ -1,54 +1,80 @@
-# C#/.NET, Visual Studio, and VSCode generated files
+# ===================================================================
+# Python
+# ===================================================================
 
-## IDE and Editor Folders
-# Visual Studio and VSCode user-specific files
-.vs/
-.vscode/
+# Byte-code / Caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Rider (JetBrains)
-.idea/
+# Virtual Environments
+# Pythonの仮想環境。プロジェクトごとに依存ライブラリを隔離するフォルダ。
+# フォルダ名が異なる場合があるので、適宜追加してください。
+venv/
+.venv/
+env/
+.env/
+ENV/
+.ENV/
+env.bak/
+venv.bak/
 
-## Build Folders
-# These are the most important folders to ignore.
-# They contain compiled output and intermediate files.
-[Bb]in/
-[Oo]bj/
-
-## Build Folders (Common variations)
-[Rr]elease/
-[Rr]eleases/
-[Dd]ebug/
-[Xx]86/
-[Xx]64/
+# Distribution / Packaging
+# PyInstallerなどで実行ファイルを作成した際の生成物
 build/
-Build/
-bld/
+dist/
+*.egg-info/
+*.spec
 
-## NuGet and Paket Folders
-# NuGet packages folder (for older project styles)
-[Pp]ackages/
-# NuGet temporary files
-*.nupkg
-# NuGet lock file (often generated in obj folder, but good to have explicitly)
-project.lock.json
+# Test & Coverage Reports
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
 
-## User-specific files
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
 
-## Test Results and Code Coverage
-TestResults/
-*.trx
-*.coverlet.json
+# ===================================================================
+# Visual Studio Code
+# ===================================================================
 
-## Log and temporary files
-*.log
-*.log.*
-*.tmp
-*.bak
+# ユーザー固有の設定やワークスペース履歴
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 
-## Windows specific
+# ローカルの履歴ファイル
+.history/
+
+
+# ===================================================================
+# PyQt / PySide
+# ===================================================================
+
+# Qt Designer(.ui)やResource(.qrc)から自動生成されるPythonファイル
+# これらをGit管理に含めるかどうかは方針によりますが、
+# .uiファイルを正として自動生成する方針の場合は無視するのが一般的です。
+# ui_*.py
+# *_ui.py
+# rc_*.py
+# *_rc.py
+
+
+# ===================================================================
+# OS Specific (Windows)
+# ===================================================================
+
+# Windows Thumbnail cache
 Thumbs.db
-Desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin folder
+$RECYCLE.BIN/
