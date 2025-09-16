@@ -4,8 +4,15 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:HiyokoViewer"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
+        TextElement.Foreground="{DynamicResource MaterialDesignBody}"
+        Background="{DynamicResource MaterialDesignPaper}"
+        TextElement.FontWeight="Regular"
+        TextElement.FontSize="13"
+        FontFamily="{materialDesign:MaterialDesignFont}"
+        Title="Hiyoko Viewer" Height="450" Width="800"
+        Style="{StaticResource MaterialDesignWindow}">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/> <!-- ボタン用の行 -->
@@ -14,12 +21,12 @@
 
         <!-- 上部のコントロール -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="5">
-            <Button Content="ファイルを開く" Width="100" Click="OpenFileButton_Click"/>
+            <Button Content="open" Width="100" Click="OpenFileButton_Click"/>
         </StackPanel>
 
         <!-- 画像表示エリア -->
         <!-- Borderで囲むと背景色がわかりやすい -->
-        <Border Grid.Row="1" Background="Gray" Margin="5">
+        <Border Grid.Row="1" Background="Black" Margin="5">
             <Image x:Name="MainImage"/>
         </Border>
 
