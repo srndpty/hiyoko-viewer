@@ -48,9 +48,8 @@ class ImageViewer(QMainWindow):
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.image_label)
         self.scroll_area.setWidgetResizable(True) # フィット表示時に重要
-        # ★ 修正点 1: scroll_areaにイベントフィルターをインストール
-        # これにより、scroll_area宛のイベントがeventFilterメソッドに送られるようになる
-        self.scroll_area.installEventFilter(self)
+        # ★★★ 修正点 1: フィルターのインストール先をviewport()に変更 ★★★
+        self.scroll_area.viewport().installEventFilter(self)
         self.setCentralWidget(self.scroll_area)
 
         # ... (メニューバー設定は変更なし) ...
@@ -62,25 +61,58 @@ class ImageViewer(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_image)
 
-    # ★ 修正点 2: イベントフィルターの本体を実装
     def eventFilter(self, source, event):
-        # イベントの発生元がscroll_areaで、かつキーが押されたイベントかチェック
-        if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
-            # 読み込み中は何も受け付けない
-            if self.is_loading:
-                return True # イベントを消費して伝播を止める
+        # イベントの発生元がscroll_areaかチェック
+        if source is self.scroll_area.viewport():
+            # --- キー押下イベントの処理 (既存のコード) ---
+            if event.type() == QEvent.Type.KeyPress:
+                if self.is_loading:
+                    return True
 
+                key = event.key()
+                if key == Qt.Key.Key_Right:
+                    self.show_next_image()
+                    return True
+                elif key == Qt.Key.Key_Left:
+                    self.show_prev_image()
+                    return True
+            
+            # ★ 修正点 1: ホイールイベントの処理を追加 ★
+            elif event.type() == QEvent.Type.Wheel:
+                if self.is_loading:
+                    return True # 読み込み中はイベントを消費
+
+                # 修飾キーを取得
+                modifiers = event.modifiers()
+                # ホイールの回転量
+                angle_delta = event.angleDelta().y()
+                scroll_amount = angle_delta // 120 * 40
+
+                if modifiers == Qt.KeyboardModifier.ShiftModifier:
+                    # Shiftキーが押されていたら、水平スクロール
+                    h_bar = self.scroll_area.horizontalScrollBar()
+                    h_bar.setValue(h_bar.value() - scroll_amount)
+                    print(f"水平スクロール: {scroll_amount}") # デバッグ用
+                    return True # ★重要: イベントを消費し、デフォルト動作を防ぐ
+                else:
+                    # Shiftキーが押されていなければ、垂直スクロール
+                    v_bar = self.scroll_area.verticalScrollBar()
+                    v_bar.setValue(v_bar.value() - scroll_amount)
+                    print(f"垂直スクロール: {scroll_amount}") # デバッグ用
+                    return True # ★重要: イベントを消費
+
+        # キーイベントが scroll_area 本体に行くケースも考慮
+        if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
+            if self.is_loading: return True
             key = event.key()
-            # 左右キーだったら、画像切り替え処理を呼び出す
             if key == Qt.Key.Key_Right:
-                self.show_next_image()
-                return True # イベントを消費して、スクロールバーに渡さない
+                self.show_next_image(); return True
             elif key == Qt.Key.Key_Left:
-                self.show_prev_image()
-                return True # イベントを消費して、スクロールバーに渡さない
+                self.show_prev_image(); return True
 
         # 上記の条件に当てはまらない場合は、デフォルトのイベント処理に任せる
         return super().eventFilter(source, event)
+    
     # ★ 修正点 3: コードの重複を避けるためにヘルパーメソッドを作成
     def show_next_image(self):
         if self.is_loading: return
@@ -270,6 +302,21 @@ class ImageViewer(QMainWindow):
                 self.unsetCursor()
         else:
             super().mouseReleaseEvent(event)
+
+    # # ★ 修正点 1: wheelEvent をオーバーライド
+    # def wheelEvent(self, event):
+    #     # 読み込み中はスクロール操作を受け付けない
+    #     if self.is_loading:
+    #         event.ignore()
+    #         return
+            
+        # Ctrl+ホイールで拡縮機能を入れる場合、ここにもう一つのelse ifを追加
+        # elif event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+        #     # Ctrl+ホイールの拡縮処理
+        #     self.zoom_image(event.angleDelta().y()) # zoom_imageは別途実装
+        #     event.accept()
+        # else:
+        #     super().wheelEvent(event) # その他のケースは親クラスに任せる (通常は到達しない)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
