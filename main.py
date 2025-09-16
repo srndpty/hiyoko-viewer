@@ -37,6 +37,9 @@ class ImageViewer(QMainWindow):
         self.is_panning = False
         self.pan_last_mouse_pos = None
 
+        # ★ 修正点 1: ズーム率を管理する変数を追加
+        self.scale_factor = 1.0
+
         # --- ウィジェットのセットアップ ---
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -48,8 +51,10 @@ class ImageViewer(QMainWindow):
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.image_label)
         self.scroll_area.setWidgetResizable(True) # フィット表示時に重要
-        # ★★★ 修正点 1: フィルターのインストール先をviewport()に変更 ★★★
+        # ホイールイベントはviewportで横取りする
         self.scroll_area.viewport().installEventFilter(self)
+        # キーイベントはscroll_area本体で横取りする
+        self.scroll_area.installEventFilter(self)
         self.setCentralWidget(self.scroll_area)
 
         # ... (メニューバー設定は変更なし) ...
@@ -62,44 +67,91 @@ class ImageViewer(QMainWindow):
         open_action.triggered.connect(self.open_image)
 
     def eventFilter(self, source, event):
+        if event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            print(f"KeyPress: {key}") # デバッグ用
+
         # イベントの発生元がscroll_areaかチェック
-        if source is self.scroll_area.viewport():
-            # --- キー押下イベントの処理 (既存のコード) ---
-            if event.type() == QEvent.Type.KeyPress:
-                if self.is_loading:
-                    return True
+        if source is self.scroll_area.viewport() and event.type() == QEvent.Type.Wheel:
+            if self.is_loading:
+                return True # 読み込み中はイベントを消費
 
-                key = event.key()
-                if key == Qt.Key.Key_Right:
-                    self.show_next_image()
-                    return True
-                elif key == Qt.Key.Key_Left:
-                    self.show_prev_image()
-                    return True
-            
-            # ★ 修正点 1: ホイールイベントの処理を追加 ★
-            elif event.type() == QEvent.Type.Wheel:
-                if self.is_loading:
-                    return True # 読み込み中はイベントを消費
+            # 修飾キーを取得
+            modifiers = event.modifiers()
+            # ホイールの回転量
+            angle_delta = event.angleDelta().y()
+            scroll_amount = angle_delta // 120 * 40
 
-                # 修飾キーを取得
-                modifiers = event.modifiers()
-                # ホイールの回転量
-                angle_delta = event.angleDelta().y()
-                scroll_amount = angle_delta // 120 * 40
+            # ★ 修正点 3: Ctrl+ホイールの処理を追加
+            if modifiers == Qt.KeyboardModifier.ControlModifier:
+                # もしフィットモードからズームを開始する場合、現在のフィット倍率を計算して初期値とする
+                if self.fit_to_window:
+                    if self.original_pixmap.isNull() or self.original_pixmap.width() == 0:
+                        return True # 画像がない場合は何もしない
+                    
+                    pixmap_size = self.original_pixmap.size()
+                    viewport_size = self.scroll_area.viewport().size()
+                    
+                    # 幅基準と高さ基準のスケールを計算し、小さい方（フィットしている方）を採用
+                    scale_w = viewport_size.width() / pixmap_size.width()
+                    scale_h = viewport_size.height() / pixmap_size.height()
+                    current_fit_scale = min(scale_w, scale_h)
+                    
+                    # 計算したフィット倍率を現在のスケールとして設定
+                    self.scale_factor = current_fit_scale
+                    
+                    # 手動ズームモードに移行
+                    self.fit_to_window = False
+                # 1. ズーム前の情報を記録
+                old_scale_factor = self.scale_factor
+                
+                # ★★★ ここを .position() に修正 ★★★
+                mouse_pos = event.position()
+                
+                h_bar = self.scroll_area.horizontalScrollBar()
+                v_bar = self.scroll_area.verticalScrollBar()
+                h_scroll_before = h_bar.value()
+                v_scroll_before = v_bar.value()
 
-                if modifiers == Qt.KeyboardModifier.ShiftModifier:
-                    # Shiftキーが押されていたら、水平スクロール
-                    h_bar = self.scroll_area.horizontalScrollBar()
-                    h_bar.setValue(h_bar.value() - scroll_amount)
-                    print(f"水平スクロール: {scroll_amount}") # デバッグ用
-                    return True # ★重要: イベントを消費し、デフォルト動作を防ぐ
+                # 2. 新しいズーム率を計算
+                if angle_delta > 0:
+                    self.scale_factor *= 1.15
                 else:
-                    # Shiftキーが押されていなければ、垂直スクロール
-                    v_bar = self.scroll_area.verticalScrollBar()
-                    v_bar.setValue(v_bar.value() - scroll_amount)
-                    print(f"垂直スクロール: {scroll_amount}") # デバッグ用
-                    return True # ★重要: イベントを消費
+                    self.scale_factor /= 1.15
+                
+                self.fit_to_window = False
+                
+                # 3. UIを更新
+                self.redraw_image()
+                
+                # 4. 新しいスクロール位置を計算 (以降のロジックは変更不要)
+                abs_x_before = h_scroll_before + mouse_pos.x()
+                abs_y_before = v_scroll_before + mouse_pos.y()
+                
+                abs_x_after = abs_x_before * (self.scale_factor / old_scale_factor)
+                abs_y_after = abs_y_before * (self.scale_factor / old_scale_factor)
+                
+                new_h_scroll = abs_x_after - mouse_pos.x()
+                new_v_scroll = abs_y_after - mouse_pos.y()
+                
+                # 5. スクロールバーを新しい位置にセット
+                h_bar.setValue(int(new_h_scroll))
+                v_bar.setValue(int(new_v_scroll))
+
+                return True
+            
+            elif modifiers == Qt.KeyboardModifier.ShiftModifier:
+                # Shiftキーが押されていたら、水平スクロール
+                h_bar = self.scroll_area.horizontalScrollBar()
+                h_bar.setValue(h_bar.value() - scroll_amount)
+                print(f"水平スクロール: {scroll_amount}") # デバッグ用
+                return True # ★重要: イベントを消費し、デフォルト動作を防ぐ
+            else:
+                # Shiftキーが押されていなければ、垂直スクロール
+                v_bar = self.scroll_area.verticalScrollBar()
+                v_bar.setValue(v_bar.value() - scroll_amount)
+                print(f"垂直スクロール: {scroll_amount}") # デバッグ用
+                return True # ★重要: イベントを消費
 
         # キーイベントが scroll_area 本体に行くケースも考慮
         if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
@@ -163,10 +215,12 @@ class ImageViewer(QMainWindow):
         # すでに読み込み中なら無視
         if self.is_loading:
             return
-        
         if not (0 <= self.current_index < len(self.image_files)):
             return
 
+        # 新しい画像を読み込む直前に、表示モードとズーム率をリセットする
+        self.fit_to_window = True
+        self.scale_factor = 1.0
         self.is_loading = True
 
         file_path = self.image_files[self.current_index]
@@ -210,23 +264,32 @@ class ImageViewer(QMainWindow):
         if self.original_pixmap.isNull():
             return
 
+        # ★ 修正点 2: 描画ロジックを scale_factor ベースに再構築
         if self.fit_to_window:
             # --- フィット表示モード ---
-            # ★ 修正点 3: フィット表示のロジックを更新
             self.scroll_area.setWidgetResizable(True)
             scaled_pixmap = self.original_pixmap.scaled(
-                self.scroll_area.size(), # ラベルではなくスクロールエリアのサイズに合わせる
+                self.scroll_area.viewport().size(), # viewportのサイズに合わせるのがより正確
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             self.image_label.setPixmap(scaled_pixmap)
+            # ステータスバーに表示モードを表示
+            self.statusBar().showMessage("表示モード: フィット")
         else:
-            # --- 原寸表示モード ---
-            # ★ 修正点 4: 原寸表示のロジックを更新
+            # --- 原寸/ズーム表示モード ---
             self.scroll_area.setWidgetResizable(False)
-            self.image_label.setPixmap(self.original_pixmap)
-            # ラベルのサイズを画像の原寸に合わせる(重要)
+            # scale_factorに基づいてリサイズ
+            scaled_pixmap = self.original_pixmap.scaled(
+                int(self.original_pixmap.width() * self.scale_factor),
+                int(self.original_pixmap.height() * self.scale_factor),
+                Qt.AspectRatioMode.KeepAspectRatio, # アスペクト比は常に維持
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
             self.image_label.adjustSize()
+            # ステータスバーに現在のズーム率を表示
+            self.statusBar().showMessage(f"ズーム: {self.scale_factor * 100:.0f}%")
 
     # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
     def resizeEvent(self, event):
@@ -249,9 +312,14 @@ class ImageViewer(QMainWindow):
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         
         if event.key() == Qt.Key.Key_F:
-            # フラグを反転させる
-            self.fit_to_window = not self.fit_to_window
-            # 表示を更新する
+            if self.fit_to_window:
+                # フィット → 原寸
+                self.fit_to_window = False
+                self.scale_factor = 1.0 # 原寸に戻す
+            else:
+                # 原寸 or ズーム → フィット
+                self.fit_to_window = True
+            
             self.redraw_image()
         elif event.key() == Qt.Key.Key_Right:
             self.show_next_image()
