@@ -69,6 +69,35 @@ class ImageViewer(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_image)
 
+        self.setAcceptDrops(True)
+
+    def load_image_from_path(self, file_path):
+        """指定されたファイルパスから画像を読み込む"""
+        if not file_path:
+            return
+
+        directory = os.path.dirname(file_path)
+        all_files = os.listdir(directory)
+        
+        supported_extensions = [
+            '.bmp', '.cur', '.gif', '.ico', '.icns', '.jpeg', '.jpg', '.pbm', 
+            '.pgm', '.png', '.ppm', '.svg', '.svgz', '.tga', '.tif', '.tiff', 
+            '.wbmp', '.webp', '.xbm', '.xpm'
+        ]
+
+        self.image_files = sorted([
+            os.path.normcase(os.path.join(directory, f)) 
+            for f in all_files if f.lower().endswith(tuple(supported_extensions))
+        ])
+        
+        normalized_path = os.path.normcase(os.path.normpath(file_path))
+        try:
+            self.current_index = self.image_files.index(normalized_path)
+            self.load_image_by_index()
+        except ValueError:
+            print(f"エラー: 正規化されたパス '{normalized_path}' がリストに見つかりませんでした。")
+            self.image_label.setText("画像の読み込みに失敗しました。")
+
     def update_status_bar(self):
         if self.original_pixmap.isNull():
             self.statusBar().clearMessage()
@@ -262,32 +291,33 @@ class ImageViewer(QMainWindow):
 
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
 
-        if file_path:
-            directory = os.path.dirname(file_path)
-            all_files = os.listdir(directory)
+        self.load_image_from_path(file_path)
+        
+    # ★ 修正点 4: dragEnterEvent をオーバーライド
+    def dragEnterEvent(self, event):
+        """ファイルがウィンドウ上にドラッグされたときに呼ばれる"""
+        # ドロップされようとしているデータにURL(ファイルパス)が含まれているかチェック
+        if event.mimeData().hasUrls():
+            # 含まれていれば、ドロップ操作を受け入れる
+            event.acceptProposedAction()
+        else:
+            # そうでなければ、通常通りの処理
+            super().dragEnterEvent(event)
 
-            # ★修正点1: リストを作成する際に、各パスをnormcaseで正規化する
-            self.image_files = sorted([
-                os.path.normcase(os.path.join(directory, f)) 
-                for f in all_files if f.lower().endswith(tuple(supported_extensions))
-            ])
-            # ★修正点2: 検索する側のパスもnormpathに加えてnormcaseで正規化する
-            normalized_path = os.path.normcase(os.path.normpath(file_path))
-
-            # --- ここからデバッグ用のprint文を追加 ---
-            # print("--- デバッグ情報 ---")
-            # print(f"検索する正規化済みパス: {normalized_path}")
-            # print("検索対象リストの中身:")
-            # for p in self.image_files:
-            #     print(p) # リストの中身を一つずつ全部表示してみる
-            # print("--------------------")
+    # ★ 修正点 5: dropEvent をオーバーライド
+    def dropEvent(self, event):
+        """ファイルがウィンドウ上でドロップされたときに呼ばれる"""
+        # ドロップされたURL(ファイルパス)のリストを取得
+        urls = event.mimeData().urls()
+        if urls:
+            # 複数のファイルがドロップされた場合も、最初のファイルだけを対象にする
+            file_path = urls[0].toLocalFile()
             
-            try:
-                self.current_index = self.image_files.index(normalized_path)
-                self.load_image_by_index()
-            except ValueError:
-                print(f"エラー: 正規化されたパス '{normalized_path}' がリストに見つかりませんでした。")
-                self.image_label.setText("画像の読み込みに失敗しました。")
+            # 共通メソッドを呼び出して画像を読み込む
+            self.load_image_from_path(file_path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     def update_gif_frame_status(self, frame_number):
         """GIFのフレームが変更されるたびにステータスバーを更新するための軽量なスロット"""
