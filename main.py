@@ -91,8 +91,18 @@ class ImageViewer(QMainWindow):
             zoom_percent = self.scale_factor * 100
         
         mode_str = "フィット" if self.fit_to_window else "フリー"
-        
         status_text = f"サイズ: {w} x {h}  |  ファイルサイズ: {fs_mb}  |  ズーム: {zoom_percent:.1f}%  |  モード: {mode_str}"
+        # もしムービーがロードされていれば、再生状態を追加
+        if self.current_movie and self.current_movie.isValid():
+            # GIFの再生状態とフレーム情報を表示
+            state_str = ""
+            if self.current_movie.state() == QMovie.MovieState.Paused:
+                state_str = " [一時停止]"
+            elif self.current_movie.state() == QMovie.MovieState.Running:
+                state_str = " [再生中]"
+            
+            frame_info = f" [フレーム: {self.current_movie.currentFrameNumber() + 1}/{self.current_movie.frameCount()}]"
+            status_text += state_str + frame_info
         self.statusBar().showMessage(status_text)
 
     def eventFilter(self, source, event):
@@ -101,87 +111,103 @@ class ImageViewer(QMainWindow):
             print(f"KeyPress: {key}") # デバッグ用
 
         # イベントの発生元がscroll_areaかチェック
-        if source is self.scroll_area.viewport() and event.type() == QEvent.Type.Wheel:
-            if self.is_loading:
-                return True # 読み込み中はイベントを消費
+        if source is self.scroll_area.viewport():
+            if event.type() == QEvent.Type.Wheel:
+                if self.is_loading:
+                    return True # 読み込み中はイベントを消費
 
-            # 修飾キーを取得
-            modifiers = event.modifiers()
-            # ホイールの回転量
-            angle_delta = event.angleDelta().y()
-            scroll_amount = angle_delta // 120 * 40
+                # 修飾キーを取得
+                modifiers = event.modifiers()
+                # ホイールの回転量
+                angle_delta = event.angleDelta().y()
+                scroll_amount = angle_delta // 120 * 40
 
-            # ★ 修正点 3: Ctrl+ホイールの処理を追加
-            if modifiers == Qt.KeyboardModifier.ControlModifier:
-                # もしフィットモードからズームを開始する場合、現在のフィット倍率を計算して初期値とする
-                if self.fit_to_window:
-                    if self.original_pixmap.isNull() or self.original_pixmap.width() == 0:
-                        return True # 画像がない場合は何もしない
+                # ★ 修正点 3: Ctrl+ホイールの処理を追加
+                if modifiers == Qt.KeyboardModifier.ControlModifier:
+                    # もしフィットモードからズームを開始する場合、現在のフィット倍率を計算して初期値とする
+                    if self.fit_to_window:
+                        if self.original_pixmap.isNull() or self.original_pixmap.width() == 0:
+                            return True # 画像がない場合は何もしない
+                        
+                        pixmap_size = self.original_pixmap.size()
+                        viewport_size = self.scroll_area.viewport().size()
+                        
+                        # 幅基準と高さ基準のスケールを計算し、小さい方（フィットしている方）を採用
+                        scale_w = viewport_size.width() / pixmap_size.width()
+                        scale_h = viewport_size.height() / pixmap_size.height()
+                        current_fit_scale = min(scale_w, scale_h)
+                        
+                        # 計算したフィット倍率を現在のスケールとして設定
+                        self.scale_factor = current_fit_scale
+                        
+                        # 手動ズームモードに移行
+                        self.fit_to_window = False
+                    # 1. ズーム前の情報を記録
+                    old_scale_factor = self.scale_factor
                     
-                    pixmap_size = self.original_pixmap.size()
-                    viewport_size = self.scroll_area.viewport().size()
+                    # ★★★ ここを .position() に修正 ★★★
+                    mouse_pos = event.position()
                     
-                    # 幅基準と高さ基準のスケールを計算し、小さい方（フィットしている方）を採用
-                    scale_w = viewport_size.width() / pixmap_size.width()
-                    scale_h = viewport_size.height() / pixmap_size.height()
-                    current_fit_scale = min(scale_w, scale_h)
+                    h_bar = self.scroll_area.horizontalScrollBar()
+                    v_bar = self.scroll_area.verticalScrollBar()
+                    h_scroll_before = h_bar.value()
+                    v_scroll_before = v_bar.value()
+
+                    # 2. 新しいズーム率を計算
+                    if angle_delta > 0:
+                        self.scale_factor *= 1.15
+                    else:
+                        self.scale_factor /= 1.15
                     
-                    # 計算したフィット倍率を現在のスケールとして設定
-                    self.scale_factor = current_fit_scale
-                    
-                    # 手動ズームモードに移行
                     self.fit_to_window = False
-                # 1. ズーム前の情報を記録
-                old_scale_factor = self.scale_factor
-                
-                # ★★★ ここを .position() に修正 ★★★
-                mouse_pos = event.position()
-                
-                h_bar = self.scroll_area.horizontalScrollBar()
-                v_bar = self.scroll_area.verticalScrollBar()
-                h_scroll_before = h_bar.value()
-                v_scroll_before = v_bar.value()
+                    
+                    # 3. UIを更新
+                    self.redraw_image()
+                    
+                    # 4. 新しいスクロール位置を計算 (以降のロジックは変更不要)
+                    abs_x_before = h_scroll_before + mouse_pos.x()
+                    abs_y_before = v_scroll_before + mouse_pos.y()
+                    
+                    abs_x_after = abs_x_before * (self.scale_factor / old_scale_factor)
+                    abs_y_after = abs_y_before * (self.scale_factor / old_scale_factor)
+                    
+                    new_h_scroll = abs_x_after - mouse_pos.x()
+                    new_v_scroll = abs_y_after - mouse_pos.y()
+                    
+                    # 5. スクロールバーを新しい位置にセット
+                    h_bar.setValue(int(new_h_scroll))
+                    v_bar.setValue(int(new_v_scroll))
+                    self.update_status_bar()
 
-                # 2. 新しいズーム率を計算
-                if angle_delta > 0:
-                    self.scale_factor *= 1.15
+                    return True
+                
+                elif modifiers == Qt.KeyboardModifier.ShiftModifier:
+                    # Shiftキーが押されていたら、水平スクロール
+                    h_bar = self.scroll_area.horizontalScrollBar()
+                    h_bar.setValue(h_bar.value() - scroll_amount)
+                    print(f"水平スクロール: {scroll_amount}") # デバッグ用
+                    return True # ★重要: イベントを消費し、デフォルト動作を防ぐ
                 else:
-                    self.scale_factor /= 1.15
-                
-                self.fit_to_window = False
-                
-                # 3. UIを更新
-                self.redraw_image()
-                
-                # 4. 新しいスクロール位置を計算 (以降のロジックは変更不要)
-                abs_x_before = h_scroll_before + mouse_pos.x()
-                abs_y_before = v_scroll_before + mouse_pos.y()
-                
-                abs_x_after = abs_x_before * (self.scale_factor / old_scale_factor)
-                abs_y_after = abs_y_before * (self.scale_factor / old_scale_factor)
-                
-                new_h_scroll = abs_x_after - mouse_pos.x()
-                new_v_scroll = abs_y_after - mouse_pos.y()
-                
-                # 5. スクロールバーを新しい位置にセット
-                h_bar.setValue(int(new_h_scroll))
-                v_bar.setValue(int(new_v_scroll))
-                self.update_status_bar()
-
-                return True
-            
-            elif modifiers == Qt.KeyboardModifier.ShiftModifier:
-                # Shiftキーが押されていたら、水平スクロール
-                h_bar = self.scroll_area.horizontalScrollBar()
-                h_bar.setValue(h_bar.value() - scroll_amount)
-                print(f"水平スクロール: {scroll_amount}") # デバッグ用
-                return True # ★重要: イベントを消費し、デフォルト動作を防ぐ
-            else:
-                # Shiftキーが押されていなければ、垂直スクロール
-                v_bar = self.scroll_area.verticalScrollBar()
-                v_bar.setValue(v_bar.value() - scroll_amount)
-                print(f"垂直スクロール: {scroll_amount}") # デバッグ用
-                return True # ★重要: イベントを消費
+                    # Shiftキーが押されていなければ、垂直スクロール
+                    v_bar = self.scroll_area.verticalScrollBar()
+                    v_bar.setValue(v_bar.value() - scroll_amount)
+                    print(f"垂直スクロール: {scroll_amount}") # デバッグ用
+                    return True # ★重要: イベントを消費
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                # 左クリックの場合のみ反応
+                if event.button() == Qt.MouseButton.LeftButton:
+                    # GIFが表示されている場合のみ処理
+                    if self.current_movie and self.current_movie.isValid():
+                        # 再生状態に応じてトグル
+                        if self.current_movie.state() == QMovie.MovieState.Running:
+                            self.current_movie.setPaused(True)
+                        elif self.current_movie.state() == QMovie.MovieState.Paused:
+                            self.current_movie.setPaused(False) # setPaused(False)で再開
+                        
+                        # ステータスバーを更新して状態をフィードバック
+                        self.update_status_bar()
+                        
+                        return True # イベントを消費
 
         # キーイベントが scroll_area 本体に行くケースも考慮
         if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
@@ -191,7 +217,17 @@ class ImageViewer(QMainWindow):
                 self.show_next_image(); return True
             elif key == Qt.Key.Key_Left or key == Qt.Key.Key_PageUp:
                 self.show_prev_image(); return True
-
+            elif key == Qt.Key.Key_Period:
+                # GIFが表示されている場合のみ処理
+                if self.current_movie and self.current_movie.isValid() and self.current_movie.frameCount() > 0:
+                    current_frame = self.current_movie.currentFrameNumber()
+                    total_frames = self.current_movie.frameCount()
+                    new_frame = (current_frame + 1) % total_frames
+                    
+                    self.current_movie.jumpToFrame(new_frame)
+                    self.current_movie.setPaused(True)
+                    self.update_status_bar()
+                    return True # イベントを消費
         # 上記の条件に当てはまらない場合は、デフォルトのイベント処理に任せる
         return super().eventFilter(source, event)
     
@@ -253,12 +289,22 @@ class ImageViewer(QMainWindow):
                 print(f"エラー: 正規化されたパス '{normalized_path}' がリストに見つかりませんでした。")
                 self.image_label.setText("画像の読み込みに失敗しました。")
 
+    def update_gif_frame_status(self, frame_number):
+        """GIFのフレームが変更されるたびにステータスバーを更新するための軽量なスロット"""
+        if self.current_movie and self.current_movie.isValid():
+            self.update_status_bar()
+
     def stop_movie(self):
         """現在再生中のムービーがあれば停止し、リソースを解放する"""
         if self.current_movie:
+            # ★ 修正点 2: シグナルの接続をすべて解除する
+            try:
+                # 引数なしでdisconnect()を呼ぶと、このシグナルに接続された全てのスロットを解除する
+                self.current_movie.frameChanged.disconnect()
+            except TypeError:
+                pass # 接続がなかった場合のエラーを無視
             self.current_movie.stop()
             self.current_movie = None
-        # ラベルからムービーを解除する
         self.image_label.setMovie(None)
     
     def load_image_by_index(self):
@@ -342,8 +388,10 @@ class ImageViewer(QMainWindow):
         if file_path.lower().endswith('.gif'):
             self.current_movie = QMovie(file_path)
             
-            # 最初のフレームがデコードされたら on_gif_first_frame を呼び出すように接続
+            # 1. 一度だけ実行したい、重い初期化処理
             self.current_movie.frameChanged.connect(self.on_gif_first_frame)
+            # 2. 毎フレーム実行したい、軽いステータス更新処理
+            self.current_movie.frameChanged.connect(self.update_gif_frame_status)
             
             self.image_label.setMovie(self.current_movie)
             self.current_movie.start()
