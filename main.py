@@ -20,6 +20,17 @@ NG_FOLDER = "_ng"
 ZOOM_IN_FACTOR = 1.15
 ZOOM_OUT_FACTOR = 1 / ZOOM_IN_FACTOR
 
+# ... (import shutil の後など)
+def resource_path(relative_path):
+    """ 開発時とPyInstaller実行時の両方で、リソースへの正しいパスを取得する """
+    try:
+        # PyInstallerは、一時フォルダのパスを _MEIPASS に格納する
+        base_path = sys._MEIPASS
+    except Exception:
+        # PyInstaller以外で実行されている場合（開発時）
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 class ImageLoader(QObject):
     finished = pyqtSignal(QPixmap)
@@ -544,10 +555,11 @@ class ImageViewer(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    viewer = ImageViewer()
-    app_icon = QIcon("hiyoko-icon.ico")
+    app_icon_path = resource_path("app_icon.ico")
+    app_icon = QIcon(app_icon_path)
     app.setWindowIcon(app_icon)
-    
+
+    viewer = ImageViewer()
     if len(sys.argv) > 1:
         # 最初の引数 (インデックス1) をファイルパスとして読み込む
         initial_file_path = sys.argv[1]
