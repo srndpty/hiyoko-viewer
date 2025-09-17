@@ -11,9 +11,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QPixmap, QKeyEvent, QCursor, QMovie, QIcon, QDragEnterEvent, QDropEvent, QMouseEvent, QWheelEvent, QCloseEvent
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent, pyqtSlot, QPointF
-
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent, pyqtSlot, QPointF, QSettings
 from send2trash import send2trash
+import time
+start_time = time.perf_counter() # <<< スクリプト開始直後に記録
 
 SUPPORTED_EXTENSIONS = [
     '.bmp', '.cur', '.gif', '.icns', '.ico', '.jfif', '.jpeg', '.jpg', 
@@ -72,10 +73,13 @@ class ImageViewer(QMainWindow):
     
     def __init__(self) -> None:
         super().__init__()
+        QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "./settings") # <<< この行を追加
         self._init_state_variables()
         self._setup_ui()
         self._setup_worker_thread()
         self._create_connections()
+        self._load_settings()
 
     def _setup_worker_thread(self) -> None:
         """永続的なワーカースレッドを1つだけ作成し、起動する"""
@@ -202,6 +206,7 @@ class ImageViewer(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """ウィンドウが閉じられるときに呼ばれる"""
+        self._save_settings() # <<< 設定保存を呼び出し
         self.worker_thread.quit()
         self.worker_thread.wait()
         super().closeEvent(event)
@@ -564,14 +569,48 @@ class ImageViewer(QMainWindow):
         self.update_status_bar()
         self.setWindowTitle(DEFAULT_TITLE)
 
+    def _load_settings(self) -> None:
+        """アプリケーションの設定を読み込み、ウィンドウの状態を復元する"""
+        settings = QSettings("HiyokoSoft", "HiyokoViewer")
+        
+        # isMaximized() は show() の後でないと正しく機能しないため、フラグで代用
+        if settings.value("main_window/maximized", "false", type=str).lower() == "true":
+            self.showMaximized()
+        else:
+            geometry = settings.value("main_window/geometry")
+            if isinstance(geometry, bytes):
+                self.restoreGeometry(geometry)
+
+    def _save_settings(self) -> None:
+        """現在のウィンドウの状態をアプリケーションの設定として保存する"""
+        settings = QSettings("HiyokoSoft", "HiyokoViewer")
+        
+        # 全画面表示のまま終了した場合、通常表示としてジオメトリを保存
+        if self.isFullScreen():
+            self.showNormal() # <<< 全画面を解除してから状態を取得
+
+        settings.setValue("main_window/maximized", str(self.isMaximized()).lower())
+        if not self.isMaximized():
+            # saveGeometryはウィンドウの位置とサイズをまとめて保存する便利なメソッド
+            settings.setValue("main_window/geometry", self.saveGeometry())
+
 if __name__ == "__main__":
+    main_start_time = time.perf_counter()
     app = QApplication(sys.argv)
+    print(f"  - QApplication created: {time.perf_counter() - main_start_time:.4f} seconds")
+
     app_icon_path = resource_path("app_icon.ico")
     if os.path.exists(app_icon_path):
         app.setWindowIcon(QIcon(app_icon_path))
     viewer = ImageViewer()
+    print(f"  - ImageViewer created: {time.perf_counter() - main_start_time:.4f} seconds")
     if len(sys.argv) > 1:
         initial_file_path = sys.argv[1]
         viewer.load_image_from_path(initial_file_path)
     viewer.show()
+    print(f"  - viewer.show() called: {time.perf_counter() - main_start_time:.4f} seconds")     # 実際にウィンドウが表示されるのはイベントループが始まってから
+    # 最初の描画イベントを捕捉するために QTimer.singleShot を使う
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: print(f"  - First paint event (approx): {time.perf_counter() - main_start_time:.4f} seconds"))
+   
     sys.exit(app.exec())
