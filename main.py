@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy, QScrollArea
 )
@@ -134,6 +135,50 @@ class ImageViewer(QMainWindow):
             status_text += state_str + frame_info
         self.statusBar().showMessage(status_text)
 
+    def move_current_image_and_load_next(self, subfolder_name):
+        """現在の画像をサブフォルダに移動し、次の画像を読み込む"""
+        if self.is_loading or not self.image_files:
+            return
+
+        # 1. 移動元と移動先のパスを準備
+        source_path = self.image_files[self.current_index]
+        directory = os.path.dirname(source_path)
+        dest_folder = os.path.join(directory, subfolder_name)
+        dest_path = os.path.join(dest_folder, os.path.basename(source_path))
+
+        # 2. 移動先のフォルダがなければ作成
+        os.makedirs(dest_folder, exist_ok=True)
+
+        try:
+            # 3. ファイルを移動
+            print(f"移動中: {source_path} -> {dest_path}")
+            shutil.move(source_path, dest_path)
+            
+            # 4. メモリ上のリストから移動したファイルを削除
+            self.image_files.pop(self.current_index)
+            
+            # 5. 次に表示する画像を決定
+            if not self.image_files:
+                # リストが空になったら、表示をクリア
+                self.stop_movie()
+                self.original_pixmap = QPixmap()
+                self.image_label.clear()
+                self.current_index = -1
+                self.update_status_bar()
+                self.setWindowTitle("画像ビューア")
+            else:
+                # リストの最後にあった画像を移動した場合、インデックスを0に戻す
+                if self.current_index >= len(self.image_files):
+                    self.current_index = 0
+                
+                # インデックスはそのままで、次の画像をロード
+                # (popしたので、現在のインデックスが事実上「次の画像」を指しているため)
+                self.load_image_by_index()
+
+        except Exception as e:
+            print(f"ファイルの移動に失敗しました: {e}")
+            self.statusBar().showMessage(f"エラー: ファイルの移動に失敗しました", 5000) # 5秒間表示
+
     def eventFilter(self, source, event):
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
@@ -242,6 +287,17 @@ class ImageViewer(QMainWindow):
         if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
             if self.is_loading: return True
             key = event.key()
+            modifiers = event.modifiers()
+
+            # KeypadModifier をチェックして、テンキーからの入力であることを確認
+            if modifiers & Qt.KeyboardModifier.KeypadModifier:
+                if key == Qt.Key.Key_9:
+                    self.move_current_image_and_load_next("_ok")
+                    return True
+                elif key == Qt.Key.Key_7:
+                    self.move_current_image_and_load_next("_ng")
+                    return True
+                
             if key == Qt.Key.Key_Right or key == Qt.Key.Key_PageDown:
                 self.show_next_image(); return True
             elif key == Qt.Key.Key_Left or key == Qt.Key.Key_PageUp:
@@ -292,7 +348,7 @@ class ImageViewer(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
 
         self.load_image_from_path(file_path)
-        
+
     # ★ 修正点 4: dragEnterEvent をオーバーライド
     def dragEnterEvent(self, event):
         """ファイルがウィンドウ上にドラッグされたときに呼ばれる"""
