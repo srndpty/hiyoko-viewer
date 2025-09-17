@@ -101,6 +101,7 @@ class ImageViewer(QMainWindow):
         self.space_key_pressed = False
         self.is_panning = False
         self.pan_last_mouse_pos = None
+        self._was_maximized_before_fullscreen: bool = False
 
     def _setup_ui(self) -> None:
         """UIコンポーネントのセットアップを行う"""
@@ -475,8 +476,16 @@ class ImageViewer(QMainWindow):
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
-            self.showNormal()
+            # --- 全画面から復帰する場合 ---
+            # 記憶しておいた状態に応じて復元する
+            if self._was_maximized_before_fullscreen:
+                self.showMaximized()
+            else:
+                self.showNormal()
         else:
+            # --- 全画面に移行する場合 ---
+            # 現在の最大化状態を記憶しておく
+            self._was_maximized_before_fullscreen = self.isMaximized()
             self.showFullScreen()
     
     def _toggle_fit_mode(self) -> None:
