@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy, QScrollArea
 )
 from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor, QMovie, QIcon
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent, pyqtSlot
 from send2trash import send2trash
 
 # <<< REFACTOR: Step 1 - 定数の分離 >>>
@@ -24,6 +24,7 @@ WELCOME_TEXT = "ファイル > 開く（Ctrl+O）またはドラッグアンド�
 NOTICE_TEXT_STYLE = "font-size: 16pt; color: #555;"
 DEFAULT_TITLE = "ひよこビューア"
 
+
 # ... (import shutil の後など)
 def resource_path(relative_path):
     """ 開発時とPyInstaller実行時の両方で、リソースへの正しいパスを取得する """
@@ -38,25 +39,43 @@ def resource_path(relative_path):
 
 class ImageLoader(QObject):
     finished = pyqtSignal(QPixmap)
-    def __init__(self, file_path):
+
+    def __init__(self): # file_path を受け取らないように変更
         super().__init__()
-        self.file_path = file_path
-    def run(self):
-        pixmap = QPixmap(self.file_path)
+
+    # run() を publicなスロットに変更
+    @pyqtSlot(str)
+    def load_image(self, file_path):
+        """ファイルパスを受け取って画像を読み込むスロット"""
+        pixmap = QPixmap(file_path)
         self.finished.emit(pixmap)
 
-
 class ImageViewer(QMainWindow):
+    request_load_image = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         # <<< REFACTOR: Step 2 - __init__ の分割 >>>
         self._init_state_variables()
         self._setup_ui()
+        self._setup_worker_thread()
         self._create_connections()
 
-    # --------------------------------------------------------------------------
-    # <<< REFACTOR: Step 4 - メソッドのグルーピング (初期化) >>>
-    # --------------------------------------------------------------------------
+    def _setup_worker_thread(self):
+        """永続的なワーカースレッドを1つだけ作成し、起動する"""
+        self.worker_thread = QThread()
+        self.image_loader = ImageLoader()
+        self.image_loader.moveToThread(self.worker_thread)
+        
+        # ワーカーの完了シグナルをメインスレッドのメソッドに接続
+        self.image_loader.finished.connect(self.update_image_display)
+        
+        # メインスレッドからの依頼シグナルをワーカースロットに接続
+        self.request_load_image.connect(self.image_loader.load_image)
+        
+        # スレッドのイベントループを開始（待機状態に入る）
+        self.worker_thread.start()
+    
     def _init_state_variables(self):
         """状態を管理するインスタンス変数を初期化する"""
         self.fit_to_window = True
@@ -255,6 +274,11 @@ class ImageViewer(QMainWindow):
         
         return False
 
+    def closeEvent(self, event):
+        """ウィンドウが閉じられるときに呼ばれる"""
+        self.worker_thread.quit()
+        self.worker_thread.wait() # スレッドが完全に終了するのを待つ
+        super().closeEvent(event)
     # --------------------------------------------------------------------------
     # <<< REFACTOR: Step 4 - メソッドのグルーピング (コアロジック) >>>
     # --------------------------------------------------------------------------
@@ -283,10 +307,11 @@ class ImageViewer(QMainWindow):
         """現在のインデックスに基づいて画像を非同期で読み込む"""
         if self.is_loading or not (0 <= self.current_index < len(self.image_files)): return
         
-        self.stop_movie()
+        # self.stop_movie()
         self.fit_to_window = True
         self.scale_factor = 1.0
         self.is_loading = True
+        print(f"Loading image at index {self.current_index}...")
 
         file_path = self.image_files[self.current_index]
         try:
@@ -294,19 +319,13 @@ class ImageViewer(QMainWindow):
         except OSError:
             self.current_filesize = 0
         
-        self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
-        self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
-        self.image_label.setText("読み込み中...")
+        # self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
+        self.statusBar().showMessage("読み込み中...")
+        # self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
+        # self.image_label.setText("読み込み中...")
 
-        self.thread = QThread()
-        self.worker = ImageLoader(file_path)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.worker.finished.connect(self.update_image_display)
-        self.thread.start()
+        # ★ 修正点 3: 依頼シグナルを発信するだけに変更
+        self.request_load_image.emit(file_path)
 
     def show_next_image(self):
         if self.is_loading or not self.image_files: return
@@ -348,6 +367,8 @@ class ImageViewer(QMainWindow):
         self.load_image_from_path(file_path)
 
     def update_image_display(self, pixmap):
+        self.stop_movie()
+
         file_path = self.image_files[self.current_index]
         if file_path.lower().endswith('.gif'):
             self.current_movie = QMovie(file_path)
@@ -361,11 +382,12 @@ class ImageViewer(QMainWindow):
                 self.original_pixmap = QPixmap()
             else:
                 self.original_pixmap = pixmap
-            self.redraw_image()
-            self.update_status_bar()
+                self.redraw_image()
+                self.update_status_bar()
 
         self.setWindowTitle(f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}")
         self.is_loading = False
+        print("Image loaded and displayed.")
 
     def on_gif_first_frame(self, frame_number):
         if not self.current_movie: return
