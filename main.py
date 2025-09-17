@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
+from PyQt6.QtGui import QMovie
 
 # 画像をバックグラウンドで読み込むためのワーカースレッド
 class ImageLoader(QObject):
@@ -40,6 +41,7 @@ class ImageViewer(QMainWindow):
         # ★ 修正点 1: ズーム率を管理する変数を追加
         self.scale_factor = 1.0
         self.current_filesize = 0
+        self.current_movie = None
 
         # --- ウィジェットのセットアップ ---
         self.image_label = QLabel()
@@ -250,14 +252,23 @@ class ImageViewer(QMainWindow):
             except ValueError:
                 print(f"エラー: 正規化されたパス '{normalized_path}' がリストに見つかりませんでした。")
                 self.image_label.setText("画像の読み込みに失敗しました。")
-                
+
+    def stop_movie(self):
+        """現在再生中のムービーがあれば停止し、リソースを解放する"""
+        if self.current_movie:
+            self.current_movie.stop()
+            self.current_movie = None
+        # ラベルからムービーを解除する
+        self.image_label.setMovie(None)
+    
     def load_image_by_index(self):
         # すでに読み込み中なら無視
         if self.is_loading:
             return
         if not (0 <= self.current_index < len(self.image_files)):
             return
-
+        
+        self.stop_movie()
         # 新しい画像を読み込む直前に、表示モードとズーム率をリセットする
         self.fit_to_window = True
         self.scale_factor = 1.0
@@ -291,15 +302,63 @@ class ImageViewer(QMainWindow):
         # スレッドを開始！
         self.thread.start()
 
-    def update_image_display(self, pixmap):
-        if pixmap.isNull():
-            self.image_label.setText("画像の読み込みに失敗しました")
-            self.original_pixmap = QPixmap()
-        else:
-            self.original_pixmap = pixmap
-            self.redraw_image()
+    def on_gif_first_frame(self, frame_number):
+        # print("-" * 20)
+        # print(f"on_gif_first_frame CALLED for frame number: {frame_number}")
+        
+        if not self.current_movie:
+            print("  -> ERROR: self.current_movie is None. Aborting.")
+            print("-" * 20)
+            return
+        
+        # print(f"  - self.current_movie is valid: {self.current_movie is not None}")
+        
+        first_frame_pixmap = self.current_movie.currentPixmap()
+        is_pixmap_null = first_frame_pixmap.isNull()
+        
+        # print(f"  - first_frame_pixmap.isNull(): {is_pixmap_null}")
 
+        if not is_pixmap_null:
+            # print("  -> LOGIC BLOCK ENTERED: Pixmap is valid. Updating display.")
+            self.original_pixmap = first_frame_pixmap
+            
+            try:
+                self.current_movie.frameChanged.disconnect(self.on_gif_first_frame)
+                # print("  -> Disconnect successful.")
+            except TypeError:
+                print("  -> Already disconnected or failed to disconnect.")
+
+            self.redraw_image()
+            self.update_status_bar()
+        else:
+            print("  -> LOGIC BLOCK SKIPPED: Pixmap is still null.")
+
+        # print("-" * 20)
+
+    def update_image_display(self, pixmap):
         file_path = self.image_files[self.current_index]
+
+        # ★ 修正点 4: ファイルの種類に応じて処理を分岐
+        if file_path.lower().endswith('.gif'):
+            self.current_movie = QMovie(file_path)
+            
+            # 最初のフレームがデコードされたら on_gif_first_frame を呼び出すように接続
+            self.current_movie.frameChanged.connect(self.on_gif_first_frame)
+            
+            self.image_label.setMovie(self.current_movie)
+            self.current_movie.start()
+            
+            # ここではまだ正しいサイズがわからないので、一旦何もしない
+            # 最初のフレームが準備できたら、on_gif_first_frame が後処理をしてくれる
+        else:
+            # --- 静止画の場合 (従来通り) ---
+            if pixmap.isNull():
+                self.image_label.setText("画像の読み込みに失敗しました")
+                self.original_pixmap = QPixmap()
+            else:
+                self.original_pixmap = pixmap
+                
+        self.redraw_image()
         self.setWindowTitle(f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}")
         self.update_status_bar()
         self.is_loading = False
@@ -310,30 +369,66 @@ class ImageViewer(QMainWindow):
         if self.original_pixmap.isNull():
             return
 
-        # ★ 修正点 2: 描画ロジックを scale_factor ベースに再構築
-        if self.fit_to_window:
-            # --- フィット表示モード ---
-            self.scroll_area.setWidgetResizable(True)
-            scaled_pixmap = self.original_pixmap.scaled(
-                self.scroll_area.viewport().size(), # viewportのサイズに合わせるのがより正確
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.image_label.setPixmap(scaled_pixmap)
-            # ステータスバーに表示モードを表示
+        # ★ 修正点 5: 描画ロジックをGIFと静止画で完全に分岐
+        if self.current_movie and self.current_movie.isValid():
+            # --- GIFアニメの再描画ロジック ---
+            self.image_label.setScaledContents(True) # ムービーをラベルサイズに追従させる
+
+            if self.fit_to_window:
+                # --- フィット表示モード ---
+                self.scroll_area.setWidgetResizable(False) # 手動でサイズ設定するのでFalseにする
+                
+                # 1. 静止画と同じロジックで、フィット表示の目標サイズを計算
+                scaled_pixmap = self.original_pixmap.scaled(
+                    self.scroll_area.viewport().size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                target_size = scaled_pixmap.size()
+
+                # 2. QLabelのサイズを、計算した目標サイズに強制的に固定する
+                self.image_label.setFixedSize(target_size)
+                
+                # 3. サイズが確定したラベルにムービーをセットして再生
+                self.image_label.setMovie(self.current_movie)
+                if not self.current_movie.state() == QMovie.MovieState.Running:
+                    self.current_movie.start()
+            else:
+                # --- ズーム表示モード ---
+                self.scroll_area.setWidgetResizable(False)
+                scaled_size = self.original_pixmap.size() * self.scale_factor
+                self.image_label.setFixedSize(scaled_size)
+                
+                # ムービーがセットされていない場合（ズーム操作が先に行われた場合など）を考慮
+                if self.image_label.movie() is not self.current_movie:
+                    self.image_label.setMovie(self.current_movie)
+                if not self.current_movie.state() == QMovie.MovieState.Running:
+                    self.current_movie.start()
         else:
-            # --- 原寸/ズーム表示モード ---
-            self.scroll_area.setWidgetResizable(False)
-            # scale_factorに基づいてリサイズ
-            scaled_pixmap = self.original_pixmap.scaled(
-                int(self.original_pixmap.width() * self.scale_factor),
-                int(self.original_pixmap.height() * self.scale_factor),
-                Qt.AspectRatioMode.KeepAspectRatio, # アスペクト比は常に維持
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.image_label.setPixmap(scaled_pixmap)
-            self.image_label.adjustSize()
-            # ステータスバーに現在のズーム率を表示
+            # --- 静止画の再描画ロジック (従来通り) ---
+            # 静止画の場合、ラベルのサイズは可変であるべきなので、固定を解除する
+            self.image_label.setMinimumSize(1, 1)
+            self.image_label.setMaximumSize(16777215, 16777215) # QWidgetの最大サイズ
+            self.image_label.setScaledContents(False)
+
+            if self.fit_to_window:
+                self.scroll_area.setWidgetResizable(True)
+                scaled_pixmap = self.original_pixmap.scaled(
+                    self.scroll_area.viewport().size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.image_label.setPixmap(scaled_pixmap)
+            else:
+                self.scroll_area.setWidgetResizable(False)
+                scaled_pixmap = self.original_pixmap.scaled(
+                    int(self.original_pixmap.width() * self.scale_factor),
+                    int(self.original_pixmap.height() * self.scale_factor),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.image_label.setPixmap(scaled_pixmap)
+                self.image_label.adjustSize()
 
     # ★ 修正点 4: ウィンドウのリサイズイベントをオーバーライド
     def resizeEvent(self, event):
