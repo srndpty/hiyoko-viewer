@@ -1,3 +1,4 @@
+import random
 import sys
 import os
 import shutil
@@ -7,6 +8,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
 from PyQt6.QtGui import QMovie
+
+SUPPORTED_EXTENSIONS = [
+    '.bmp', '.cur', '.gif', '.icns', '.ico', '.jfif', '.jpeg', '.jpg', 
+    '.pbm', '.pdf', '.pgm', '.png', '.ppm', '.svg', '.svgz', '.tga', 
+    '.tif', '.tiff', '.wbmp', '.webp', '.xbm', '.xpm'
+]
 
 # 画像をバックグラウンドで読み込むためのワーカースレッド
 class ImageLoader(QObject):
@@ -61,7 +68,11 @@ class ImageViewer(QMainWindow):
         self.scroll_area.installEventFilter(self)
         self.setCentralWidget(self.scroll_area)
 
-        # ... (メニューバー設定は変更なし) ...
+        # シャッフル用設定
+        self.is_shuffled = False
+        self.sorted_image_files = [] # ソート順を保持するバックアップ
+        
+        # メニューバーとステータスバー
         self.image_files = []
         self.current_index = -1
         menu = self.menuBar()
@@ -80,16 +91,18 @@ class ImageViewer(QMainWindow):
         directory = os.path.dirname(file_path)
         all_files = os.listdir(directory)
         
-        supported_extensions = [
-            '.bmp', '.cur', '.gif', '.ico', '.icns', '.jpeg', '.jpg', '.pbm', 
-            '.pgm', '.png', '.ppm', '.svg', '.svgz', '.tga', '.tif', '.tiff', 
-            '.wbmp', '.webp', '.xbm', '.xpm'
-        ]
-
-        self.image_files = sorted([
+        # 1. ソート済みのリストを作成
+        sorted_list = sorted([
             os.path.normcase(os.path.join(directory, f)) 
-            for f in all_files if f.lower().endswith(tuple(supported_extensions))
+            for f in all_files if f.lower().endswith(tuple(SUPPORTED_EXTENSIONS))
         ])
+        
+        # 2. バックアップと作業用リストの両方にセット
+        self.sorted_image_files = sorted_list
+        self.image_files = list(self.sorted_image_files) # コピーを渡す
+
+        # 3. ランダムモードをリセット
+        self.is_shuffled = False
         
         normalized_path = os.path.normcase(os.path.normpath(file_path))
         try:
@@ -121,6 +134,9 @@ class ImageViewer(QMainWindow):
             zoom_percent = self.scale_factor * 100
         
         mode_str = "フィット" if self.fit_to_window else "フリー"
+        # ★ 修正点 2: ランダムモードの表示を追加
+        if self.is_shuffled:
+            mode_str += " [ランダム]"
         status_text = f"サイズ: {w} x {h}  |  ファイルサイズ: {fs_mb}  |  ズーム: {zoom_percent:.1f}%  |  モード: {mode_str}"
         # もしムービーがロードされていれば、再生状態を追加
         if self.current_movie and self.current_movie.isValid():
@@ -335,14 +351,8 @@ class ImageViewer(QMainWindow):
         # すでに読み込み中なら無視
         if self.is_loading:
             return
-        
-        supported_extensions = [
-            '.bmp', '.cur', '.gif', '.icns', '.ico', '.jfif', '.jpeg', '.jpg', 
-            '.pbm', '.pdf', '.pgm', '.png', '.ppm', '.svg', '.svgz', '.tga', 
-            '.tif', '.tiff', '.wbmp', '.webp', '.xbm', '.xpm'
-        ]
 
-        filter_extensions = " ".join([f"*.{ext[1:]}" for ext in supported_extensions])
+        filter_extensions = " ".join([f"*.{ext[1:]}" for ext in SUPPORTED_EXTENSIONS])
         dialog_filter = f"対応画像ファイル ({filter_extensions});;すべてのファイル (*)"
 
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
@@ -603,7 +613,32 @@ class ImageViewer(QMainWindow):
                 self.fit_to_window = True
             self.redraw_image()
             self.update_status_bar()
-            
+        elif event.key() == Qt.Key.Key_R:
+            # ★ 修正点 4: Rキーでランダムモードをトグル
+            if not self.image_files: # 画像がない場合は何もしない
+                return
+
+            if not self.is_shuffled:
+                # --- ランダムモードへ ---
+                self.is_shuffled = True
+                random.shuffle(self.image_files) # 作業用リストをシャッフル
+                self.current_index = 0
+                self.load_image_by_index()
+            else:
+                # --- 通常モードへ ---
+                self.is_shuffled = False
+                # 現在の画像パスを保持
+                current_path = self.image_files[self.current_index]
+                # ソート順を復元
+                self.image_files = list(self.sorted_image_files)
+                # 復元後のリストで現在の画像のインデックスを再検索
+                if current_path in self.image_files:
+                    self.current_index = self.image_files.index(current_path)
+                else:
+                    self.current_index = 0 # 稀なケース(ファイル移動後など)では先頭に戻す
+                
+                # 表示中の画像は同じなので、ステータスバーの更新だけでOK
+                self.update_status_bar()            
         else:
             super().keyPressEvent(event)
 
