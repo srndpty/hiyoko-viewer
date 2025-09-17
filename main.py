@@ -5,7 +5,7 @@ import shutil
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy, QScrollArea
 )
-from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor, QMovie
+from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor, QMovie, QIcon
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
 
 # <<< REFACTOR: Step 1 - 定数の分離 >>>
@@ -531,7 +531,6 @@ class ImageViewer(QMainWindow):
             new_frame = (current_frame + 1) % total_frames
             
             self.current_movie.jumpToFrame(new_frame)
-            # self.current_movie.start()
             self.current_movie.setPaused(True)
             self.update_status_bar()
 
@@ -546,5 +545,13 @@ class ImageViewer(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     viewer = ImageViewer()
+    app_icon = QIcon("hiyoko-icon.ico")
+    app.setWindowIcon(app_icon)
+    
+    if len(sys.argv) > 1:
+        # 最初の引数 (インデックス1) をファイルパスとして読み込む
+        initial_file_path = sys.argv[1]
+        viewer.load_image_from_path(initial_file_path)
+    
     viewer.show()
     sys.exit(app.exec())
