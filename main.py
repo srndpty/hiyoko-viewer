@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor, QMovie, QIcon
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
+from send2trash import send2trash
 
 # <<< REFACTOR: Step 1 - 定数の分離 >>>
 # ハードコーディングされた値をファイルスコープの定数として定義
@@ -241,6 +242,8 @@ class ImageViewer(QMainWindow):
             self.show_next_image(); return True
         elif key in (Qt.Key.Key_Left, Qt.Key.Key_PageUp):
             self.show_prev_image(); return True
+        elif key == Qt.Key.Key_Delete:
+            self.delete_current_image_and_load_next(); return True
         elif key == Qt.Key.Key_Period:
             self._step_gif_frame(key); return True
         
@@ -552,6 +555,33 @@ class ImageViewer(QMainWindow):
         self.current_index = -1
         self.update_status_bar()
         self.setWindowTitle("画像ビューア")
+
+    def delete_current_image_and_load_next(self):
+        """現在の画像をごみ箱に移動し、次の画像を読み込む"""
+        if self.is_loading or not self.image_files:
+            return
+
+        source_path = self.image_files[self.current_index]
+
+        try:
+            # 3. ファイルをごみ箱に移動
+            print(f"ごみ箱へ移動: {source_path}")
+            send2trash(source_path)
+            
+            # 4. メモリ上のリストから移動したファイルを削除 (moveメソッドと同じロジック)
+            self.image_files.pop(self.current_index)
+            
+            # 5. 次に表示する画像を決定
+            if not self.image_files:
+                self._clear_display()
+            else:
+                if self.current_index >= len(self.image_files):
+                    self.current_index = 0
+                self.load_image_by_index()
+
+        except Exception as e:
+            print(f"ファイルの削除に失敗しました: {e}")
+            self.statusBar().showMessage(f"エラー: ファイルの削除に失敗しました", 5000)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
