@@ -66,11 +66,17 @@
 このアプリケーションはPyInstallerを使ってWindows向けの実行可能ファイルに変換できます。
 
 ```bash
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-make_build.bat
+.\make_build.bat
 ```
 
-ビルドが完了すると、`dist` フォルダ内に `main.exe` が生成されます。
+- ビルドが完了すると、`dist` フォルダ内に `hiyoko-viewer.exe` が生成されます。
+- `C:\Program Files\hiyoko-viewer` を作成してそこにコピーし、`"C:\Program Files\hiyoko-viewer\hiyoko-viewer.exe"`となることを確認
+- `register_app.reg` を実行
+- 「既定のアプリ」からhiyoko or ひよこ　と検索し、拡張子を設定
+
 
 ## LICENSE
 

@@ -1,0 +1,130 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+; 1. アプリケーション自体の登録
+; ここで "ひよこビューア" というプログラムをWindowsに教えます。
+; ============================================================================
+
+[HKEY_CURRENT_USER\Software\Classes\Applications\hiyoko-viewer.exe]
+
+[HKEY_CURRENT_USER\Software\Classes\Applications\hiyoko-viewer.exe\shell]
+
+[HKEY_CURRENT_USER\Software\Classes\Applications\hiyoko-viewer.exe\shell\open]
+@="ひよこビューアで開く"
+
+[HKEY_CURRENT_USER\Software\Classes\Applications\hiyoko-viewer.exe\shell\open\command]
+@="\"C:\\Program Files\\hiyoko-viewer\\hiyoko-viewer.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Applications\hiyoko-viewer.exe\DefaultIcon]
+@="C:\\Program Files\\hiyoko-viewer\\hiyoko-viewer.exe,0"
+
+
+; ============================================================================
+; 2. アプリケーションの「能力」の登録
+; ここで "ひよこビューア" がどの拡張子を扱えるかを宣言します。
+; これが「既定のアプリ」設定画面に表示されるための最も重要な部分です。
+; ============================================================================
+
+[HKEY_CURRENT_USER\Software\HiyokoViewer]
+@="Hiyoko Viewer Application"
+
+[HKEY_CURRENT_USER\Software\HiyokoViewer\Capabilities]
+"ApplicationName"="ひよこビューア"
+"ApplicationDescription"="Pythonで作成された高速な画像ビューア"
+
+; --- ここに対応させたい拡張子を "=".AssocFile.XXX" の形式で列挙 ---
+[HKEY_CURRENT_USER\Software\HiyokoViewer\Capabilities\FileAssociations]
+".bmp"="HiyokoViewer.AssocFile.BMP"
+".cur"="HiyokoViewer.AssocFile.CUR"
+".gif"="HiyokoViewer.AssocFile.GIF"
+".icns"="HiyokoViewer.AssocFile.ICNS"
+".ico"="HiyokoViewer.AssocFile.ICO"
+".jfif"="HiyokoViewer.AssocFile.JFIF"
+".jpeg"="HiyokoViewer.AssocFile.JPEG"
+".jpg"="HiyokoViewer.AssocFile.JPG"
+".pbm"="HiyokoViewer.AssocFile.PBM"
+".pdf"="HiyokoViewer.AssocFile.PDF"
+".pgm"="HiyokoViewer.AssocFile.PGM"
+".png"="HiyokoViewer.AssocFile.PNG"
+".ppm"="HiyokoViewer.AssocFile.PPM"
+".svg"="HiyokoViewer.AssocFile.SVG"
+".svgz"="HiyokoViewer.AssocFile.SVGZ"
+".tga"="HiyokoViewer.AssocFile.TGA"
+".tif"="HiyokoViewer.AssocFile.TIF"
+".tiff"="HiyokoViewer.AssocFile.TIFF"
+".wbmp"="HiyokoViewer.AssocFile.WBMP"
+".webp"="HiyokoViewer.AssocFile.WEBP"
+".xbm"="HiyokoViewer.AssocFile.XBM"
+".xpm"="HiyokoViewer.AssocFile.XPM"
+
+
+; ============================================================================
+; 3. 拡張子とアプリケーションの関連付け定義
+; 上記の "AssocFile.XXX" が何者であるかを定義します。
+; ============================================================================
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.BMP]
+@="BMP Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.CUR]
+@="CUR Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.GIF]
+@="GIF Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.ICNS]
+@="ICNS Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.ICO]
+@="ICO Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.JFIF]
+@="JFIF Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.JPEG]
+@="JPEG Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.JPG]
+@="JPG Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PBM]
+@="PBM Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PDF]
+@="PDF Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PGM]
+@="PGM Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PNG]
+@="PNG Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PPM]
+@="PPM Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.SVG]
+@="SVG Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.SVGZ]
+@="SVGZ Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.TGA]
+@="TGA Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.TIF]
+@="TIF Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.TIFF]
+@="TIFF Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.WBMP]
+@="WBMP Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.WEBP]
+@="WEBP Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.XBM]
+@="XBM Image File"
+
+[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.XPM]
+@="XPM Image File"
