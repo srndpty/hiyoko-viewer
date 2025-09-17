@@ -20,6 +20,9 @@ OK_FOLDER = "_ok"
 NG_FOLDER = "_ng"
 ZOOM_IN_FACTOR = 1.15
 ZOOM_OUT_FACTOR = 1 / ZOOM_IN_FACTOR
+WELCOME_TEXT = "ファイル > 開く（Ctrl+O）またはドラッグアンドドロップで読み込む"
+NOTICE_TEXT_STYLE = "font-size: 16pt; color: #555;"
+DEFAULT_TITLE = "ひよこビューア"
 
 # ... (import shutil の後など)
 def resource_path(relative_path):
@@ -75,12 +78,15 @@ class ImageViewer(QMainWindow):
 
     def _setup_ui(self):
         """UIコンポーネントのセットアップを行う"""
-        self.setWindowTitle("画像ビューア")
+        self.setWindowTitle(DEFAULT_TITLE)
         self.setGeometry(100, 100, 800, 600)
         self.setAcceptDrops(True)
 
-        self.image_label = QLabel()
+        # ★ 修正点 1: 起動時に案内テキストを表示する
+        self.image_label = QLabel(WELCOME_TEXT)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 見栄えを良くするために、少しスタイルを適用（お好みで調整してください）
+        self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -289,6 +295,7 @@ class ImageViewer(QMainWindow):
             self.current_filesize = 0
         
         self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
+        self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
         self.image_label.setText("読み込み中...")
 
         self.thread = QThread()
@@ -551,10 +558,11 @@ class ImageViewer(QMainWindow):
     def _clear_display(self):
         self.stop_movie()
         self.original_pixmap = QPixmap()
-        self.image_label.clear()
+        self.image_label.setText(WELCOME_TEXT)
+        self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
         self.current_index = -1
         self.update_status_bar()
-        self.setWindowTitle("画像ビューア")
+        self.setWindowTitle(DEFAULT_TITLE)
 
     def delete_current_image_and_load_next(self):
         """現在の画像をごみ箱に移動し、次の画像を読み込む"""
