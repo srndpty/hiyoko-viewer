@@ -1,16 +1,20 @@
+from __future__ import annotations # <<< 型ヒントの記述を柔軟にするおまじない
 import random
 import sys
 import os
 import shutil
+from typing import Optional, List # <<< 型ヒントのために Optional と List をインポート
+
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy, QScrollArea
+    QApplication, QMainWindow, QLabel, QFileDialog, QSizePolicy, QScrollArea, QMenuBar, QStatusBar
 )
-from PyQt6.QtGui import QPixmap, QKeyEvent, QCursor, QMovie, QIcon
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent, pyqtSlot
+from PyQt6.QtGui import (
+    QPixmap, QKeyEvent, QCursor, QMovie, QIcon, QDragEnterEvent, QDropEvent, QMouseEvent, QWheelEvent, QCloseEvent
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent, pyqtSlot, QPointF
+
 from send2trash import send2trash
 
-# <<< REFACTOR: Step 1 - 定数の分離 >>>
-# ハードコーディングされた値をファイルスコープの定数として定義
 SUPPORTED_EXTENSIONS = [
     '.bmp', '.cur', '.gif', '.icns', '.ico', '.jfif', '.jpeg', '.jpg', 
     '.pbm', '.pdf', '.pgm', '.png', '.ppm', '.svg', '.svgz', '.tga', 
@@ -24,28 +28,22 @@ WELCOME_TEXT = "ファイル > 開く（Ctrl+O）またはドラッグアンド�
 NOTICE_TEXT_STYLE = "font-size: 16pt; color: #555;"
 DEFAULT_TITLE = "ひよこビューア"
 
-
-# ... (import shutil の後など)
-def resource_path(relative_path):
+def resource_path(relative_path: str) -> str: # <<< 型ヒントを追加
     """ 開発時とPyInstaller実行時の両方で、リソースへの正しいパスを取得する """
     try:
-        # PyInstallerは、一時フォルダのパスを _MEIPASS に格納する
-        base_path = sys._MEIPASS
+        base_path: str = sys._MEIPASS
     except Exception:
-        # PyInstaller以外で実行されている場合（開発時）
         base_path = os.path.abspath(".")
-
     return os.path.join(base_path, relative_path)
 
 class ImageLoader(QObject):
     finished = pyqtSignal(QPixmap)
 
-    def __init__(self): # file_path を受け取らないように変更
+    def __init__(self) -> None: # <<< 型ヒントを追加
         super().__init__()
 
-    # run() を publicなスロットに変更
     @pyqtSlot(str)
-    def load_image(self, file_path):
+    def load_image(self, file_path: str) -> None: # <<< 型ヒントを追加
         """ファイルパスを受け取って画像を読み込むスロット"""
         pixmap = QPixmap(file_path)
         self.finished.emit(pixmap)
@@ -53,90 +51,94 @@ class ImageLoader(QObject):
 class ImageViewer(QMainWindow):
     request_load_image = pyqtSignal(str)
 
-    def __init__(self):
+    # --- インスタンス変数の型宣言 (Python 3.6+) ---
+    fit_to_window: bool
+    is_loading: bool
+    is_shuffled: bool
+    image_files: List[str]
+    sorted_image_files: List[str]
+    current_index: int
+    original_pixmap: QPixmap
+    current_movie: Optional[QMovie]
+    current_filesize: int
+    scale_factor: float
+    space_key_pressed: bool
+    is_panning: bool
+    pan_last_mouse_pos: Optional[QPointF]
+    worker_thread: QThread
+    image_loader: ImageLoader
+    image_label: QLabel
+    scroll_area: QScrollArea
+    
+    def __init__(self) -> None:
         super().__init__()
-        # <<< REFACTOR: Step 2 - __init__ の分割 >>>
         self._init_state_variables()
         self._setup_ui()
         self._setup_worker_thread()
         self._create_connections()
 
-    def _setup_worker_thread(self):
+    def _setup_worker_thread(self) -> None:
         """永続的なワーカースレッドを1つだけ作成し、起動する"""
         self.worker_thread = QThread()
         self.image_loader = ImageLoader()
         self.image_loader.moveToThread(self.worker_thread)
-        
-        # ワーカーの完了シグナルをメインスレッドのメソッドに接続
         self.image_loader.finished.connect(self.update_image_display)
-        
-        # メインスレッドからの依頼シグナルをワーカースロットに接続
         self.request_load_image.connect(self.image_loader.load_image)
-        
-        # スレッドのイベントループを開始（待機状態に入る）
         self.worker_thread.start()
     
-    def _init_state_variables(self):
+    def _init_state_variables(self) -> None:
         """状態を管理するインスタンス変数を初期化する"""
         self.fit_to_window = True
         self.is_loading = False
         self.is_shuffled = False
-        
         self.image_files = []
         self.sorted_image_files = []
         self.current_index = -1
-        
         self.original_pixmap = QPixmap()
         self.current_movie = None
         self.current_filesize = 0
         self.scale_factor = 1.0
-
         self.space_key_pressed = False
         self.is_panning = False
         self.pan_last_mouse_pos = None
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """UIコンポーネントのセットアップを行う"""
         self.setWindowTitle(DEFAULT_TITLE)
         self.setGeometry(100, 100, 800, 600)
         self.setAcceptDrops(True)
-
-        # ★ 修正点 1: 起動時に案内テキストを表示する
         self.image_label = QLabel(WELCOME_TEXT)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # 見栄えを良くするために、少しスタイルを適用（お好みで調整してください）
         self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
-
         self.scroll_area = QScrollArea()
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.image_label)
         self.scroll_area.setWidgetResizable(True)
         self.setCentralWidget(self.scroll_area)
-
-        menu = self.menuBar()
+        menu: QMenuBar = self.menuBar()
         file_menu = menu.addMenu("ファイル")
         self.open_action = file_menu.addAction("開く")
         self.open_action.setShortcut("Ctrl+O")
+        self.setStatusBar(QStatusBar(self))
 
-    def _create_connections(self):
+    def _create_connections(self) -> None:
         """シグナルとスロット、イベントフィルターを接続する"""
         self.open_action.triggered.connect(self.open_image)
         self.scroll_area.viewport().installEventFilter(self)
         self.scroll_area.installEventFilter(self)
 
     # --------------------------------------------------------------------------
-    # <<< REFACTOR: Step 4 - メソッドのグルーピング (イベントハンドラ) >>>
+    # イベントハンドラ
     # --------------------------------------------------------------------------
-    def eventFilter(self, source, event):
+    def eventFilter(self, source: QObject, event: QEvent) -> bool:
         """イベントを横取りし、適切なハンドラにディスパッチする"""
         if source is self.scroll_area.viewport():
             event_type = event.type()
-            # ★ 修正点 1: すべてのマウスイベントをここで処理するように拡張
             if event_type == QEvent.Type.Wheel:
+                # QWheelEvent にキャストして型安全性を高める
                 self._handle_wheel_event(event)
                 return True
             elif event_type == QEvent.Type.MouseButtonPress:
-                # ヘルパーが True を返した場合のみイベントを消費する
                 return self._handle_mouse_press_on_viewport(event)
             elif event_type == QEvent.Type.MouseMove:
                 return self._handle_mouse_move_on_viewport(event)
@@ -149,13 +151,11 @@ class ImageViewer(QMainWindow):
 
         return super().eventFilter(source, event)
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         """メインウィンドウが受け取るキーイベントを処理する"""
-        print(f"Key Pressed: {event.key()}")
         if self.is_loading:
             event.ignore()
             return
-        
         key = event.key()
         if key == Qt.Key.Key_Space and not event.isAutoRepeat():
             self.space_key_pressed = True
@@ -171,32 +171,66 @@ class ImageViewer(QMainWindow):
         else:
             super().keyPressEvent(event)
 
-    def keyReleaseEvent(self, event):
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
             self.space_key_pressed = False
             self.is_panning = False
             self.unsetCursor()
         else:
             super().keyReleaseEvent(event)
+    
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
 
-    def _handle_mouse_press_on_viewport(self, event):
+    def dropEvent(self, event: QDropEvent) -> None:
+        if urls := event.mimeData().urls():
+            file_path = urls[0].toLocalFile()
+            self.load_image_from_path(file_path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.fit_to_window:
+            self.redraw_image()
+        self.update_status_bar()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """ウィンドウが閉じられるときに呼ばれる"""
+        self.worker_thread.quit()
+        self.worker_thread.wait()
+        super().closeEvent(event)
+
+    # --------------------------------------------------------------------------
+    # イベントヘルパー
+    # --------------------------------------------------------------------------
+    def _handle_wheel_event(self, event: QWheelEvent) -> bool:
+        """ホイールイベントを処理する"""
+        if self.is_loading: return True
+        modifiers = event.modifiers()
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            self._zoom_at_cursor(event)
+        else:
+            self._scroll_image(event)
+        return True
+
+    def _handle_mouse_press_on_viewport(self, event: QMouseEvent) -> bool:
         """ビューポート上でのマウスクリックを処理する。処理した場合のみ True を返す"""
         if event.button() == Qt.MouseButton.LeftButton:
-            # ★ 修正点 2: パンニング開始のロジックをここに移管
             if not self.fit_to_window and self.space_key_pressed:
                 self.is_panning = True
-                self.pan_last_mouse_pos = event.position() # .pos() ではなく .position()
+                self.pan_last_mouse_pos = event.position()
                 self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
-                return True # イベントを処理した
-            
-            # GIF再生トグルのロジック
+                return True
             if self._toggle_gif_playback():
-                return True # イベントを処理した
-        
-        return False # イベントを処理しなかった
+                return True
+        return False
 
-    # ★ 修正点 3: 新しいマウスイベントヘルパーを追加
-    def _handle_mouse_move_on_viewport(self, event):
+    def _handle_mouse_move_on_viewport(self, event: QMouseEvent) -> bool:
         """ビューポート上でのマウス移動を処理する"""
         if self.is_panning:
             delta = event.position() - self.pan_last_mouse_pos
@@ -208,7 +242,7 @@ class ImageViewer(QMainWindow):
             return True
         return False
 
-    def _handle_mouse_release_on_viewport(self, event):
+    def _handle_mouse_release_on_viewport(self, event: QMouseEvent) -> bool:
         """ビューポート上でのマウスボタン解放を処理する"""
         if self.is_panning and event.button() == Qt.MouseButton.LeftButton:
             self.is_panning = False
@@ -216,48 +250,12 @@ class ImageViewer(QMainWindow):
             self.setCursor(QCursor(cursor_shape))
             return True
         return False
-    
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
 
-    def dropEvent(self, event):
-        if urls := event.mimeData().urls():
-            file_path = urls[0].toLocalFile()
-            self.load_image_from_path(file_path)
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.fit_to_window:
-            self.redraw_image()
-        self.update_status_bar()
-
-    # --------------------------------------------------------------------------
-    # <<< REFACTOR: Step 4 - メソッドのグルーピング (イベントヘルパー) >>>
-    # --------------------------------------------------------------------------
-    def _handle_wheel_event(self, event):
-        """ホイールイベントを処理する"""
-        if self.is_loading: return True
-        
-        modifiers = event.modifiers()
-        if modifiers == Qt.KeyboardModifier.ControlModifier:
-            self._zoom_at_cursor(event)
-        else:
-            self._scroll_image(event)
-        return True
-
-    def _handle_key_press_on_scroll_area(self, event):
+    def _handle_key_press_on_scroll_area(self, event: QKeyEvent) -> bool:
         """スクロールエリアがフォーカス時のキー入力を処理する"""
         if self.is_loading: return True
-        
         key = event.key()
         modifiers = event.modifiers()
-
         if modifiers & Qt.KeyboardModifier.KeypadModifier:
             if key == Qt.Key.Key_7:
                 self.move_current_image_and_load_next(OK_FOLDER); return True
@@ -271,31 +269,22 @@ class ImageViewer(QMainWindow):
             self.delete_current_image_and_load_next(); return True
         elif key == Qt.Key.Key_Period:
             self._step_gif_frame(key); return True
-        
         return False
 
-    def closeEvent(self, event):
-        """ウィンドウが閉じられるときに呼ばれる"""
-        self.worker_thread.quit()
-        self.worker_thread.wait() # スレッドが完全に終了するのを待つ
-        super().closeEvent(event)
     # --------------------------------------------------------------------------
-    # <<< REFACTOR: Step 4 - メソッドのグルーピング (コアロジック) >>>
+    # コアロジック
     # --------------------------------------------------------------------------
-    def load_image_from_path(self, file_path):
+    def load_image_from_path(self, file_path: str) -> None:
         """指定されたファイルパスから画像リストを生成し、読み込みを開始する"""
         if not file_path: return
         directory = os.path.dirname(file_path)
-        
         sorted_list = sorted([
             os.path.normcase(os.path.join(directory, f)) 
             for f in os.listdir(directory) if f.lower().endswith(tuple(SUPPORTED_EXTENSIONS))
         ])
-        
         self.sorted_image_files = sorted_list
         self.image_files = list(self.sorted_image_files)
         self.is_shuffled = False
-        
         normalized_path = os.path.normcase(os.path.normpath(file_path))
         try:
             self.current_index = self.image_files.index(normalized_path)
@@ -303,47 +292,36 @@ class ImageViewer(QMainWindow):
         except ValueError:
             self.image_label.setText("画像の読み込みに失敗しました。")
 
-    def load_image_by_index(self):
+    def load_image_by_index(self) -> None:
         """現在のインデックスに基づいて画像を非同期で読み込む"""
         if self.is_loading or not (0 <= self.current_index < len(self.image_files)): return
-        
-        # self.stop_movie()
         self.fit_to_window = True
         self.scale_factor = 1.0
         self.is_loading = True
-        print(f"Loading image at index {self.current_index}...")
-
         file_path = self.image_files[self.current_index]
         try:
             self.current_filesize = os.path.getsize(file_path)
         except OSError:
             self.current_filesize = 0
-        
-        # self.setWindowTitle(f"読み込み中... {os.path.basename(file_path)}")
-        self.statusBar().showMessage("読み込み中...")
-        # self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
-        # self.image_label.setText("読み込み中...")
-
-        # ★ 修正点 3: 依頼シグナルを発信するだけに変更
+        self.setWindowTitle(f"{self.windowTitle()} | 読み込み中...")
+        # self.statusBar().showMessage("読み込み中...")
         self.request_load_image.emit(file_path)
 
-    def show_next_image(self):
+    def show_next_image(self) -> None:
         if self.is_loading or not self.image_files: return
         self.current_index = (self.current_index + 1) % len(self.image_files)
         self.load_image_by_index()
 
-    def show_prev_image(self):
+    def show_prev_image(self) -> None:
         if self.is_loading or not self.image_files: return
         self.current_index = (self.current_index - 1 + len(self.image_files)) % len(self.image_files)
         self.load_image_by_index()
 
-    def move_current_image_and_load_next(self, subfolder_name):
+    def move_current_image_and_load_next(self, subfolder_name: str) -> None:
         if self.is_loading or not self.image_files: return
-
         source_path = self.image_files[self.current_index]
         dest_folder = os.path.join(os.path.dirname(source_path), subfolder_name)
         os.makedirs(dest_folder, exist_ok=True)
-        
         try:
             shutil.move(source_path, dest_folder)
             self.image_files.pop(self.current_index)
@@ -355,20 +333,37 @@ class ImageViewer(QMainWindow):
                 self.load_image_by_index()
         except Exception as e:
             self.statusBar().showMessage(f"エラー: ファイルの移動に失敗しました", 5000)
+            
+    def delete_current_image_and_load_next(self) -> None:
+        """現在の画像をごみ箱に移動し、次の画像を読み込む"""
+        if self.is_loading or not self.image_files: return
+        source_path = self.image_files[self.current_index]
+        # ... (確認ダイアログのロジック) ...
+        try:
+            send2trash(source_path)
+            self.image_files.pop(self.current_index)
+            if not self.image_files:
+                self._clear_display()
+            else:
+                if self.current_index >= len(self.image_files):
+                    self.current_index = 0
+                self.load_image_by_index()
+        except Exception as e:
+            self.statusBar().showMessage(f"エラー: ファイルの削除に失敗しました", 5000)
 
     # --------------------------------------------------------------------------
-    # <<< REFACTOR: Step 4 - メソッドのグルーピング (UI更新/スロット) >>>
+    # UI更新/スロット
     # --------------------------------------------------------------------------
-    def open_image(self):
+    def open_image(self) -> None:
         if self.is_loading: return
         filter_str = " ".join([f"*{ext}" for ext in SUPPORTED_EXTENSIONS])
         dialog_filter = f"対応画像ファイル ({filter_str});;すべてのファイル (*)"
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
 
-    def update_image_display(self, pixmap):
+    @pyqtSlot(QPixmap)
+    def update_image_display(self, pixmap: QPixmap) -> None:
         self.stop_movie()
-
         file_path = self.image_files[self.current_index]
         if file_path.lower().endswith('.gif'):
             self.current_movie = QMovie(file_path)
@@ -382,51 +377,43 @@ class ImageViewer(QMainWindow):
                 self.original_pixmap = QPixmap()
             else:
                 self.original_pixmap = pixmap
-                self.redraw_image()
-                self.update_status_bar()
-
+            self.redraw_image()
+            self.update_status_bar()
         self.setWindowTitle(f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}")
         self.is_loading = False
-        print("Image loaded and displayed.")
 
-    def on_gif_first_frame(self, frame_number):
+    @pyqtSlot(int)
+    def on_gif_first_frame(self, frame_number: int) -> None:
         if not self.current_movie: return
         first_frame_pixmap = self.current_movie.currentPixmap()
         if not first_frame_pixmap.isNull():
             self.original_pixmap = first_frame_pixmap
-            try:
-                self.current_movie.frameChanged.disconnect(self.on_gif_first_frame)
+            try: self.current_movie.frameChanged.disconnect(self.on_gif_first_frame)
             except TypeError: pass
             self.redraw_image()
             self.update_status_bar()
 
-    def update_gif_frame_status(self, frame_number):
+    @pyqtSlot(int)
+    def update_gif_frame_status(self, frame_number: int) -> None:
         if self.current_movie and self.current_movie.isValid():
             self.update_status_bar()
 
-    def redraw_image(self):
+    def redraw_image(self) -> None:
         if self.original_pixmap.isNull(): return
-        
         is_gif = self.current_movie and self.current_movie.isValid()
         if is_gif:
             self._redraw_gif()
         else:
             self._redraw_static_image()
 
-    def update_status_bar(self):
+    def update_status_bar(self) -> None:
         if self.original_pixmap.isNull():
-            self.statusBar().clearMessage()
-            return
-
-        parts = [] # ステータスバーの各パーツを格納するリスト
-
-        # 1. 画像の基本情報
+            self.statusBar().clearMessage(); return
+        parts: List[str] = []
         w, h = self.original_pixmap.width(), self.original_pixmap.height()
         fs_mb = f"{self.current_filesize / (1024*1024):.2f}MB"
         parts.append(f"🖼️ {w}x{h}")
         parts.append(f"💾 {fs_mb}")
-
-        # 2. ズームとモードの情報
         if self.fit_to_window:
             vp_size = self.scroll_area.viewport().size()
             scale = min(vp_size.width() / w, vp_size.height() / h) if w > 0 and h > 0 else 0
@@ -435,26 +422,18 @@ class ImageViewer(QMainWindow):
         else:
             zoom_percent = self.scale_factor * 100
             mode_icon = ""
-        
         parts.append(f"{mode_icon} {zoom_percent:.1f}%")
-
-        # 3. ランダムモードの情報
         if self.is_shuffled:
             parts.append("🔀")
-
-        # 4. GIFの再生状態とフレーム情報
         if self.current_movie and self.current_movie.isValid():
             state = self.current_movie.state()
             state_icon = "►" if state == QMovie.MovieState.Running else "⏸"
-            
-            frame_info = f"🎞️ {self.current_movie.currentFrameNumber() + 1}/{self.current_movie.frameCount()}"
-            parts.append(f"{state_icon} {frame_info}")
-
-        # すべてのパーツをセパレータで結合して表示
+            frame_info = f"🎞️ [{self.current_movie.currentFrameNumber() + 1}/{self.current_movie.frameCount()}]"
+            parts.append(f"{frame_info} {state_icon}")
         status_text = "  |  ".join(parts)
         self.statusBar().showMessage(status_text)
 
-    def stop_movie(self):
+    def stop_movie(self) -> None:
         if self.current_movie:
             try: self.current_movie.frameChanged.disconnect()
             except TypeError: pass
@@ -463,9 +442,9 @@ class ImageViewer(QMainWindow):
         self.image_label.setMovie(None)
 
     # --------------------------------------------------------------------------
-    # <<< REFACTOR: Step 4 - メソッドのグルーピング (内部ヘルパー) >>>
+    # 内部ヘルパー
     # --------------------------------------------------------------------------
-    def _redraw_gif(self):
+    def _redraw_gif(self) -> None:
         self.image_label.setScaledContents(True)
         if self.fit_to_window:
             self.scroll_area.setWidgetResizable(False)
@@ -475,17 +454,15 @@ class ImageViewer(QMainWindow):
             self.scroll_area.setWidgetResizable(False)
             scaled_size = self.original_pixmap.size() * self.scale_factor
             self.image_label.setFixedSize(scaled_size)
-        
         if self.image_label.movie() is not self.current_movie:
             self.image_label.setMovie(self.current_movie)
-        if self.current_movie.state() != QMovie.MovieState.Running:
+        if self.current_movie and self.current_movie.state() != QMovie.MovieState.Running:
             self.current_movie.start()
 
-    def _redraw_static_image(self):
+    def _redraw_static_image(self) -> None:
         self.image_label.setMinimumSize(1, 1)
         self.image_label.setMaximumSize(16777215, 16777215)
         self.image_label.setScaledContents(False)
-
         if self.fit_to_window:
             self.scroll_area.setWidgetResizable(True)
             scaled_pixmap = self.original_pixmap.scaled(self.scroll_area.viewport().size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -496,25 +473,20 @@ class ImageViewer(QMainWindow):
             self.image_label.setPixmap(scaled_pixmap)
             self.image_label.adjustSize()
 
-    def _toggle_fullscreen(self):
-        print("Toggling fullscreen")
+    def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
         else:
             self.showFullScreen()
     
-    def _toggle_fit_mode(self):
-        print("Toggling fit mode")
-        if self.fit_to_window:
-            self.fit_to_window = False
+    def _toggle_fit_mode(self) -> None:
+        self.fit_to_window = not self.fit_to_window
+        if not self.fit_to_window:
             self.scale_factor = 1.0
-        else:
-            self.fit_to_window = True
         self.redraw_image()
         self.update_status_bar()
 
-    def _toggle_shuffle_mode(self):
-        print("Toggling shuffle mode")
+    def _toggle_shuffle_mode(self) -> None:
         if not self.image_files: return
         self.is_shuffled = not self.is_shuffled
         if self.is_shuffled:
@@ -527,7 +499,7 @@ class ImageViewer(QMainWindow):
             self.current_index = self.image_files.index(current_path) if current_path in self.image_files else 0
             self.update_status_bar()
 
-    def _zoom_at_cursor(self, event):
+    def _zoom_at_cursor(self, event: QWheelEvent) -> None:
         old_scale_factor = self.scale_factor
         if self.fit_to_window:
             pixmap_size = self.original_pixmap.size()
@@ -536,11 +508,9 @@ class ImageViewer(QMainWindow):
             scale = min(vp_size.width() / pixmap_size.width(), vp_size.height() / pixmap_size.height())
             self.scale_factor = scale
             self.fit_to_window = False
-        
         angle_delta = event.angleDelta().y()
         self.scale_factor *= ZOOM_IN_FACTOR if angle_delta > 0 else ZOOM_OUT_FACTOR
         self.redraw_image()
-
         mouse_pos = event.position()
         h_bar, v_bar = self.scroll_area.horizontalScrollBar(), self.scroll_area.verticalScrollBar()
         h_scroll = (h_bar.value() + mouse_pos.x()) * (self.scale_factor / old_scale_factor) - mouse_pos.x()
@@ -549,14 +519,14 @@ class ImageViewer(QMainWindow):
         v_bar.setValue(int(v_scroll))
         self.update_status_bar()
         
-    def _scroll_image(self, event):
+    def _scroll_image(self, event: QWheelEvent) -> None:
         scroll_amount = event.angleDelta().y() // 120 * 40
         if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
             self.scroll_area.horizontalScrollBar().setValue(self.scroll_area.horizontalScrollBar().value() - scroll_amount)
         else:
             self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().value() - scroll_amount)
             
-    def _toggle_gif_playback(self):
+    def _toggle_gif_playback(self) -> bool:
         if self.current_movie and self.current_movie.isValid():
             state = self.current_movie.state()
             if state == QMovie.MovieState.Running:
@@ -567,17 +537,16 @@ class ImageViewer(QMainWindow):
             return True
         return False
 
-    def _step_gif_frame(self, key):
+    def _step_gif_frame(self, key: int) -> None:
         if self.current_movie and self.current_movie.isValid() and self.current_movie.frameCount() > 0:
             current_frame = self.current_movie.currentFrameNumber()
             total_frames = self.current_movie.frameCount()
             new_frame = (current_frame + 1) % total_frames
-            
             self.current_movie.jumpToFrame(new_frame)
             self.current_movie.setPaused(True)
             self.update_status_bar()
 
-    def _clear_display(self):
+    def _clear_display(self) -> None:
         self.stop_movie()
         self.original_pixmap = QPixmap()
         self.image_label.setText(WELCOME_TEXT)
@@ -586,44 +555,14 @@ class ImageViewer(QMainWindow):
         self.update_status_bar()
         self.setWindowTitle(DEFAULT_TITLE)
 
-    def delete_current_image_and_load_next(self):
-        """現在の画像をごみ箱に移動し、次の画像を読み込む"""
-        if self.is_loading or not self.image_files:
-            return
-
-        source_path = self.image_files[self.current_index]
-
-        try:
-            # 3. ファイルをごみ箱に移動
-            print(f"ごみ箱へ移動: {source_path}")
-            send2trash(source_path)
-            
-            # 4. メモリ上のリストから移動したファイルを削除 (moveメソッドと同じロジック)
-            self.image_files.pop(self.current_index)
-            
-            # 5. 次に表示する画像を決定
-            if not self.image_files:
-                self._clear_display()
-            else:
-                if self.current_index >= len(self.image_files):
-                    self.current_index = 0
-                self.load_image_by_index()
-
-        except Exception as e:
-            print(f"ファイルの削除に失敗しました: {e}")
-            self.statusBar().showMessage(f"エラー: ファイルの削除に失敗しました", 5000)
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app_icon_path = resource_path("app_icon.ico")
-    app_icon = QIcon(app_icon_path)
-    app.setWindowIcon(app_icon)
-
+    if os.path.exists(app_icon_path):
+        app.setWindowIcon(QIcon(app_icon_path))
     viewer = ImageViewer()
     if len(sys.argv) > 1:
-        # 最初の引数 (インデックス1) をファイルパスとして読み込む
         initial_file_path = sys.argv[1]
         viewer.load_image_from_path(initial_file_path)
-    
     viewer.show()
     sys.exit(app.exec())
