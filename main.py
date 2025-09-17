@@ -187,9 +187,9 @@ class ImageViewer(QMainWindow):
         if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
             if self.is_loading: return True
             key = event.key()
-            if key == Qt.Key.Key_Right:
+            if key == Qt.Key.Key_Right or key == Qt.Key.Key_PageDown:
                 self.show_next_image(); return True
-            elif key == Qt.Key.Key_Left:
+            elif key == Qt.Key.Key_Left or key == Qt.Key.Key_PageUp:
                 self.show_prev_image(); return True
 
         # 上記の条件に当てはまらない場合は、デフォルトのイベント処理に任せる
