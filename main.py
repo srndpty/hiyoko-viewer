@@ -152,7 +152,11 @@ class ImageViewer(QMainWindow):
                 return self._handle_mouse_move_on_viewport(event)
             elif event_type == QEvent.Type.MouseButtonRelease:
                 return self._handle_mouse_release_on_viewport(event)
-        
+            elif event_type == QEvent.Type.MouseButtonDblClick: # ダブルクリックしたら画像読み込み
+                # 何も読み込まれていない場合限定
+                if not self.image_files:
+                    self.open_image()
+                    return True # イベントを消費
         if source is self.scroll_area and event.type() == QEvent.Type.KeyPress:
             if self._handle_key_press_on_scroll_area(event):
                 return True
