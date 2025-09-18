@@ -13,6 +13,9 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent, pyqtSlot, QPointF, QSettings
 from send2trash import send2trash
+from PIL import Image
+import json
+from PyQt6.QtWidgets import QMessageBox
 import time
 start_time = time.perf_counter() # <<< スクリプト開始直後に記録
 
@@ -172,7 +175,9 @@ class ImageViewer(QMainWindow):
         elif key == Qt.Key.Key_F:
             self._toggle_fit_mode()
         elif key == Qt.Key.Key_R:
-            self._toggle_shuffle_mode()
+            self._toggle_shuffle_mode()        
+        elif key == Qt.Key.Key_I:
+            self.show_metadata_dialog()
         else:
             super().keyPressEvent(event)
 
@@ -593,6 +598,116 @@ class ImageViewer(QMainWindow):
         if not self.isMaximized():
             # saveGeometryはウィンドウの位置とサイズをまとめて保存する便利なメソッド
             settings.setValue("main_window/geometry", self.saveGeometry())
+
+    def show_metadata_dialog(self):
+        """現在の画像のメタデータを表示するダイアログを開く"""
+        if not self.image_files:
+            return
+
+        file_path = self.image_files[self.current_index]
+        file_name = os.path.basename(file_path)
+        
+        try:
+            image = Image.open(file_path)
+            
+            metadata_parts = []
+            
+            # --- 1. PNGの parameters (AIプロンプト) をチェック ---
+            if image.info:
+                # ★★★ ここからが NovelAI 対応の追加箇所 ★★★
+                # NovelAI は 'Comment' キーにJSON形式で全パラメータを格納する
+                if 'Comment' in image.info:
+                    try:
+                        # JSON文字列をPythonの辞書にパース
+                        nai_data = json.loads(image.info['Comment'])
+                        
+                        metadata_parts.append("--- NovelAI パラメータ (JSON) ---\n")
+                        # json.dumpsを使って、インデント付きの綺麗な文字列に変換
+                        pretty_json = json.dumps(nai_data, indent=2, ensure_ascii=False)
+                        metadata_parts.append(pretty_json)
+                        metadata_parts.append("\n" + "-"*20 + "\n")
+
+                    except json.JSONDecodeError:
+                        # JSONとしてパースできない場合は、生のテキストとして表示
+                        metadata_parts.append("--- NovelAI パラメータ (Comment) ---\n")
+                        metadata_parts.append(image.info['Comment'])
+                        metadata_parts.append("\n" + "-"*20 + "\n")
+
+                # Stable Diffusion WebUI (A1111) は 'parameters' キーを使用
+                elif 'parameters' in image.info:
+                    metadata_parts.append("--- AI生成パラメータ (PNG) ---\n")
+                    metadata_parts.append(image.info['parameters'])
+                    metadata_parts.append("\n" + "-"*20 + "\n")
+
+                # 念のため、'Description' も表示する (プレーンなプロンプトが入っている場合がある)
+                if 'Description' in image.info and 'Comment' not in image.info:
+                     metadata_parts.append("--- AI生成パラメータ (Description) ---\n")
+                     metadata_parts.append(image.info['Description'])
+                     metadata_parts.append("\n" + "-"*20 + "\n")
+            
+            # --- 2. Exif データをチェック ---
+            exif_data = image.getexif()
+            if exif_data:
+                # PillowはExifタグをID(数値)で返すので、タグ名に変換する
+                from PIL.ExifTags import TAGS
+                
+                exif_info = {
+                    TAGS.get(key, key): value
+                    for key, value in exif_data.items()
+                }
+                
+                # AIプロンプトが含まれている可能性のある主要なExifタグ
+                if 'UserComment' in exif_info:
+                    # UserCommentは文字コード情報などが前に付いていることがあるのでデコードを試みる
+                    try:
+                        # Assuming the format might be like b'UNICODE\x00\x00\x00Prompt...'
+                        decoded_comment = exif_info['UserComment'].decode('utf-8', errors='ignore')
+                        # 'UNICODE' and null bytes might be at the start
+                        if decoded_comment.startswith('UNICODE'):
+                             decoded_comment = decoded_comment[8:].lstrip('\x00')
+                        metadata_parts.append("--- AI生成パラメータ (UserComment) ---\n")
+                        metadata_parts.append(decoded_comment)
+                        metadata_parts.append("\n" + "-"*20 + "\n")
+
+                    except (UnicodeDecodeError, AttributeError):
+                        pass # デコードできない場合はスキップ
+
+                metadata_parts.append("--- Exif 詳細 ---\n")
+                for tag, value in exif_info.items():
+                    # 値が長すぎる場合は短縮表示
+                    value_str = str(value)
+                    if len(value_str) > 100:
+                        value_str = value_str[:100] + "..."
+                    metadata_parts.append(f"{tag}: {value_str}")
+
+            if not metadata_parts:
+                final_text = "この画像には表示可能なメタデータが見つかりませんでした。"
+            else:
+                final_text = "\n".join(metadata_parts)
+
+        except Exception as e:
+            final_text = f"メタデータの読み込み中にエラーが発生しました:\n{e}"
+        
+        # QMessageBox を使って情報を表示
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(f"メタデータ: {file_name}")
+        msg_box.setText(final_text)
+        # スクロール可能な詳細テキストエリアとして設定
+        msg_box.setDetailedText(final_text) 
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.addButton(QMessageBox.StandardButton.Ok)
+        
+        # 3. カスタムボタンとして「すべてコピー」を追加
+        copy_button = msg_box.addButton("すべてコピー", QMessageBox.ButtonRole.ActionRole)
+        
+        # 4. ダイアログを実行
+        msg_box.exec()
+        
+        # 5. どのボタンが押されたかを確認
+        if msg_box.clickedButton() == copy_button:
+            # 「すべてコピー」ボタンが押された場合の処理
+            clipboard = QApplication.clipboard()
+            clipboard.setText(final_text)
 
 if __name__ == "__main__":
     main_start_time = time.perf_counter()

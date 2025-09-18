@@ -59,6 +59,7 @@
 | キー                        | 機能                               |
 | --------------------------- | ---------------------------------- |
 | `R`                         | ランダム（シャッフル）表示の切替   |
+| `I`                         | メタデータ表示   |
 | `Esc`                       | アプリケーションを終了             |
 
 ## ビルド方法
@@ -72,10 +73,9 @@ pip install -r requirements.txt
 .\make_build.bat
 ```
 
-- ビルドが完了すると、`dist` フォルダ内に `hiyoko-viewer.exe` が生成されます。
-- `C:\Program Files\hiyoko-viewer` を作成してそこにコピーし、`"C:\Program Files\hiyoko-viewer\hiyoko-viewer.exe"`となることを確認
-- `register_app.reg` を実行
-- 「既定のアプリ」からhiyoko or ひよこ　と検索し、拡張子を設定
+- ビルドが完了すると、`dist` フォルダ内に `hiyoko-viewer.exe` と `_internal`フォルダが生成されます。
+- `C:\Program Files\hiyoko-viewer` を作成してそこにコピーし、`"C:\Program Files\hiyoko-viewer\hiyoko-viewer.exe"`などとなることを確認
+- （`register_app.reg` は用意したけどなんか上手く動かないので、png,jpg,gif,webpあたりを1つずつ手動で登録したほうが早いかも）
 
 
 ## LICENSE
