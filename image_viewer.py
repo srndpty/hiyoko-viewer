@@ -64,6 +64,7 @@ class ImageViewer(QMainWindow):
         self._create_connections()
         self._load_settings()
         self._setup_tray_icon()
+
     def _setup_tray_icon(self) -> None:
         """システムトレイアイコンとメニューを作成する"""
         self.tray_icon = QSystemTrayIcon(self)
@@ -73,6 +74,7 @@ class ImageViewer(QMainWindow):
         if os.path.exists(icon_path):
             self.tray_icon.setIcon(QIcon(icon_path))
             
+        self.tray_icon.setToolTip(DEFAULT_TITLE)
         # --- 右クリックメニューの作成 ---
         tray_menu = QMenu()
         

@@ -1,6 +1,15 @@
 from __future__ import annotations
 import sys
 import os
+# pillow-simdを使う場合は、PILのimportより前に環境変数を設定する
+# Python 3.8以降では、os.add_dll_directory を使って
+# vcpkgでビルドされたDLLへのパスを明示的に追加する
+# これは、他の import よりも前に実行する必要がある
+# VCPKG_BIN_PATH = r"C:\dev\vcpkg\vcpkg\installed\x64-windows\bin"
+# if os.path.exists(VCPKG_BIN_PATH):
+#     os.add_dll_directory(VCPKG_BIN_PATH)
+#     print(f"Added VCPKG_BIN_PATH: {VCPKG_BIN_PATH}")
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import QSharedMemory
