@@ -168,7 +168,19 @@ class ImageViewer(QMainWindow):
         file_menu = menu.addMenu("ファイル")
         self.open_action = file_menu.addAction("開く")
         self.open_action.setShortcut("Ctrl+O")
-        self.setStatusBar(QStatusBar(self))
+        self.status_bar = QStatusBar(self)
+        self.setStatusBar(self.status_bar)
+        self.status_bar.setStyleSheet("""
+            QStatusBar {
+                background-color: #2D2D2D; /* 背景色をメインウィンドウと合わせる */
+                color: #CCCCCC;           /* テキストの色 */
+                border-top: 1px solid #444444; /* 上部に境界線を入れると見やすい（任意）*/
+            }
+            /* サイズグリップのスタイルも定義しておくと、より一貫性が出る */
+            QStatusBar::item {
+                border: none;
+            }
+        """)
 
     def _create_connections(self) -> None:
         """シグナルとスロット、イベントフィルターを接続する"""
@@ -256,7 +268,8 @@ class ImageViewer(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """ウィンドウが閉じられるときに呼ばれる"""
-        # アプリを終了する代わりに、ウィンドウを非表示にする
+        # ★ 修正点 2: ウィンドウを非表示にする「前」に、表示をクリアする
+        self._clear_display()
         event.ignore()
         self.hide()
 
@@ -329,16 +342,16 @@ class ImageViewer(QMainWindow):
     # --------------------------------------------------------------------------
     # コアロジック
     # --------------------------------------------------------------------------
+    
     def load_image_from_path(self, file_path: str) -> None:
         """ファイルリストの生成をワーカーに依頼する（非同期）"""
         if not file_path: return
         
-        # ★ 修正点 5: 重い処理はすべてワーカーに依頼するだけ
+        self._clear_display() # <<< ★重要★ closeEventからこちらに移動
+        # 重い処理はすべてワーカーに依頼するだけ
         directory = os.path.dirname(file_path)
         normalized_path = os.path.normcase(os.path.normpath(file_path))
-        
         # UIはすぐに表示させ、裏でファイルリストの読み込みを依頼
-        self.statusBar().showMessage("ファイルリストを読み込み中...")
         self.request_load_list.emit(directory, normalized_path)
 
     # ★ 修正点 6: 新しいスロットを追加
@@ -369,7 +382,7 @@ class ImageViewer(QMainWindow):
         except OSError:
             self.current_filesize = 0
         self.setWindowTitle(f"{self.windowTitle()} | 読み込み中...")
-        # self.statusBar().showMessage("読み込み中...")
+        self.statusBar().showMessage("読み込み中...")
         self.request_load_image.emit(file_path)
 
     def show_next_image(self) -> None:
@@ -625,7 +638,7 @@ class ImageViewer(QMainWindow):
         self.image_label.setText(WELCOME_TEXT)
         self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
         self.current_index = -1
-        self.update_status_bar()
+        self.statusBar().showMessage("")
         self.setWindowTitle(DEFAULT_TITLE)
 
     def _load_settings(self) -> None:
