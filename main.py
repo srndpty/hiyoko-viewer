@@ -39,6 +39,7 @@ start_time = time.perf_counter() # <<< スクリプト開始直後に記録
 
 class ImageViewer(QMainWindow):
     request_load_image = pyqtSignal(str)
+    request_load_list = pyqtSignal(str, str)
 
     # --- インスタンス変数の型宣言 (Python 3.6+) ---
     fit_to_window: bool
@@ -108,6 +109,11 @@ class ImageViewer(QMainWindow):
 
     def show_window(self) -> None:
         """ウィンドウを表示し、アクティブにする"""
+        # 表示する直前に、フラッシュを防ぐための属性を設定する
+        # WA_TranslucentBackground を使うと、Qtは自身の背景を描画せず、
+        # 子ウィジェット（scroll_areaなど）が描画されるのを待つため、フラッシュが抑制される
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.show()
         self.activateWindow()
         self.raise_() # 他のウィンドウの前面に表示する
@@ -119,10 +125,15 @@ class ImageViewer(QMainWindow):
         self.worker_thread = QThread()
         self.image_loader = ImageLoader()
         self.image_loader.moveToThread(self.worker_thread)
-        self.image_loader.finished.connect(self.update_image_display)
+        # ★ 修正点 4: シグナル名を image_loaded に変更し、新しいシグナルを接続
+        self.image_loader.image_loaded.connect(self.update_image_display)
+        self.image_loader.list_loaded.connect(self.on_file_list_loaded) # <<< 新しいスロットを接続
+        
         self.request_load_image.connect(self.image_loader.load_image)
+        self.request_load_list.connect(self.image_loader.load_file_list) # <<< 新しいスロットを接続
+        
         self.worker_thread.start()
-    
+
     def _init_state_variables(self) -> None:
         """状態を管理するインスタンス変数を初期化する"""
         self.fit_to_window = True
@@ -319,22 +330,32 @@ class ImageViewer(QMainWindow):
     # コアロジック
     # --------------------------------------------------------------------------
     def load_image_from_path(self, file_path: str) -> None:
-        """指定されたファイルパスから画像リストを生成し、読み込みを開始する"""
+        """ファイルリストの生成をワーカーに依頼する（非同期）"""
         if not file_path: return
+        
+        # ★ 修正点 5: 重い処理はすべてワーカーに依頼するだけ
         directory = os.path.dirname(file_path)
-        sorted_list = sorted([
-            os.path.normcase(os.path.join(directory, f)) 
-            for f in os.listdir(directory) if f.lower().endswith(tuple(SUPPORTED_EXTENSIONS))
-        ])
-        self.sorted_image_files = sorted_list
+        normalized_path = os.path.normcase(os.path.normpath(file_path))
+        
+        # UIはすぐに表示させ、裏でファイルリストの読み込みを依頼
+        self.statusBar().showMessage("ファイルリストを読み込み中...")
+        self.request_load_list.emit(directory, normalized_path)
+
+    # ★ 修正点 6: 新しいスロットを追加
+    @pyqtSlot(list, int)
+    def on_file_list_loaded(self, image_list: list, initial_index: int) -> None:
+        """ワーカーからのファイルリスト読み込み完了通知を受け取る"""
+        if not image_list:
+            self.image_label.setText("画像の読み込みに失敗しました。")
+            return
+            
+        self.sorted_image_files = image_list
         self.image_files = list(self.sorted_image_files)
         self.is_shuffled = False
-        normalized_path = os.path.normcase(os.path.normpath(file_path))
-        try:
-            self.current_index = self.image_files.index(normalized_path)
-            self.load_image_by_index()
-        except ValueError:
-            self.image_label.setText("画像の読み込みに失敗しました。")
+        self.current_index = initial_index
+        
+        # ファイルリストの準備ができたので、次に画像の読み込みを開始
+        self.load_image_by_index()
 
     def load_image_by_index(self) -> None:
         """現在のインデックスに基づいて画像を非同期で読み込む"""
@@ -753,7 +774,9 @@ if __name__ == "__main__":
 
     # --- ここから下は、最初のインスタンスのみが実行する ---
     app = QApplication(sys.argv)
-
+    # app.setPalette() よりも強力なスタイルシートで、デフォルトのウィンドウ背景を上書きする
+    # これにより、OSがウィンドウの「器」を作成する際のデフォルト色を制御する
+    app.setStyleSheet("QMainWindow { background-color: #2d2d2d; }")
     app.setQuitOnLastWindowClosed(False)
     
     app_icon_path = resource_path("app_icon.ico")
@@ -783,7 +806,7 @@ if __name__ == "__main__":
         viewer.load_image_from_path(initial_file_path)
     
     viewer.show()
-   
+
     def cleanup_on_quit():
         # 共有メモリを解放する
         shared_memory.detach()
