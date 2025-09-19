@@ -27,6 +27,10 @@ from constants import (
     SUPPORTED_EXTENSIONS, OK_FOLDER, NG_FOLDER, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR,
     WELCOME_TEXT, NOTICE_TEXT_STYLE, DEFAULT_TITLE, resource_path
 )
+from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
+from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QSharedMemory
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from widgets import MetadataDialog
 from worker import ImageLoader
 
@@ -64,6 +68,51 @@ class ImageViewer(QMainWindow):
         self._setup_worker_thread()
         self._create_connections()
         self._load_settings()
+        self._setup_tray_icon()
+    def _setup_tray_icon(self) -> None:
+        """システムトレイアイコンとメニューを作成する"""
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # resource_path を使ってアイコンを設定
+        icon_path = resource_path("app_icon.ico")
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+            
+        # --- 右クリックメニューの作成 ---
+        tray_menu = QMenu()
+        
+        show_action = QAction("ひよこビューアを表示", self)
+        show_action.triggered.connect(self.show_window)
+        tray_menu.addAction(show_action)
+
+        tray_menu.addSeparator()
+
+        quit_action = QAction("完全に終了", self)
+        # ここでは app.quit を直接呼ぶ
+        quit_action.triggered.connect(QApplication.instance().quit)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # --- 左クリックのアクションを接続 ---
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        
+        self.tray_icon.show()
+
+    # ★ 修正点 3: トレイアイコンがクリックされたときのスロット
+    def on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        """トレイアイコンのアクティベーションイベントを処理する"""
+        # 左クリックまたはダブルクリックでウィンドウを表示
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.show_window()
+
+    def show_window(self) -> None:
+        """ウィンドウを表示し、アクティブにする"""
+        self.show()
+        self.activateWindow()
+        self.raise_() # 他のウィンドウの前面に表示する
+
+
 
     def _setup_worker_thread(self) -> None:
         """永続的なワーカースレッドを1つだけ作成し、起動する"""
@@ -196,10 +245,9 @@ class ImageViewer(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """ウィンドウが閉じられるときに呼ばれる"""
-        self._save_settings() # <<< 設定保存を呼び出し
-        self.worker_thread.quit()
-        self.worker_thread.wait()
-        super().closeEvent(event)
+        # アプリを終了する代わりに、ウィンドウを非表示にする
+        event.ignore()
+        self.hide()
 
     # --------------------------------------------------------------------------
     # イベントヘルパー
@@ -682,22 +730,68 @@ class ImageViewer(QMainWindow):
         dialog.exec()
 
 if __name__ == "__main__":
-    main_start_time = time.perf_counter()
-    app = QApplication(sys.argv)
-    print(f"  - QApplication created: {time.perf_counter() - main_start_time:.4f} seconds")
+    # --- 二重起動防止とインスタンス間通信 ---
+    # アプリケーションごとにユニークなキーを設定
+    APP_UNIQUE_KEY = "hiyoko-viewer-unique-key-for-ipc"
+    
+    shared_memory = QSharedMemory(APP_UNIQUE_KEY)
+    
+    # create() が False を返す = すでにメモリが確保されている = 他のインスタンスが実行中
+    if not shared_memory.create(1):
+        # 実行中のインスタンスにファイルパスを渡して、こちらは終了する
+        socket = QLocalSocket()
+        socket.connectToServer(APP_UNIQUE_KEY)
+        if socket.waitForConnected(500): # 500ms 待つ
+            # 2番目以降の引数（ファイルパス）をUTF-8でエンコードして送信
+            args_to_send = sys.argv[1:] if len(sys.argv) > 1 else []
+            data = "\n".join(args_to_send).encode('utf-8')
+            socket.write(data)
+            socket.waitForBytesWritten(500)
+        
+        # このインスタンスは役目を終えたので終了
+        sys.exit(0)
 
+    # --- ここから下は、最初のインスタンスのみが実行する ---
+    app = QApplication(sys.argv)
+
+    app.setQuitOnLastWindowClosed(False)
+    
     app_icon_path = resource_path("app_icon.ico")
     if os.path.exists(app_icon_path):
         app.setWindowIcon(QIcon(app_icon_path))
+        
     viewer = ImageViewer()
-    print(f"  - ImageViewer created: {time.perf_counter() - main_start_time:.4f} seconds")
+    
+    # 2番目のインスタンスからファイルパスを受け取るためのサーバーをセットアップ
+    local_server = QLocalServer()
+    
+    def handle_new_connection():
+        socket = local_server.nextPendingConnection()
+        if socket.waitForReadyRead(500):
+            data = socket.readAll().data().decode('utf-8')
+            file_paths = data.splitlines()
+            if file_paths:
+                viewer.load_image_from_path(file_paths[0])
+            viewer.show_window()
+
+    local_server.newConnection.connect(handle_new_connection)
+    local_server.listen(APP_UNIQUE_KEY)
+
+    # 最初の起動時の引数を処理
     if len(sys.argv) > 1:
         initial_file_path = sys.argv[1]
         viewer.load_image_from_path(initial_file_path)
+    
     viewer.show()
-    print(f"  - viewer.show() called: {time.perf_counter() - main_start_time:.4f} seconds")     # 実際にウィンドウが表示されるのはイベントループが始まってから
-    # 最初の描画イベントを捕捉するために QTimer.singleShot を使う
-    from PyQt6.QtCore import QTimer
-    QTimer.singleShot(0, lambda: print(f"  - First paint event (approx): {time.perf_counter() - main_start_time:.4f} seconds"))
    
+    def cleanup_on_quit():
+        # 共有メモリを解放する
+        shared_memory.detach()
+        
+        viewer.worker_thread.quit()
+        viewer.worker_thread.wait()
+        viewer._save_settings()
+
+    app.aboutToQuit.connect(cleanup_on_quit)
+
     sys.exit(app.exec())
