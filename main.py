@@ -16,7 +16,7 @@ from PyQt6.QtCore import QSharedMemory
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from constants import resource_path
-from image_viewer import ImageViewer # <<< ImageViewer をここからインポート
+from image_viewer import ImageViewer
 
 if __name__ == "__main__":
     # --- 二重起動防止とインスタンス間通信 ---

@@ -56,8 +56,9 @@ class ImageViewer(QMainWindow):
     
     def __init__(self) -> None:
         super().__init__()
+
         QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "./settings") # <<< この行を追加
+        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "./settings")
         self._init_state_variables()
         self._setup_ui()
         self._setup_worker_thread()
@@ -65,6 +66,18 @@ class ImageViewer(QMainWindow):
         self._load_settings()
         self._setup_tray_icon()
 
+    def _is_animated_webp(self, file_path: str) -> bool:
+        """WebP がアニメーションかどうかを Pillow で判定する"""
+        if not file_path.lower().endswith(".webp"):
+            return False
+        try:
+            with Image.open(file_path) as im:
+                # Pillow の WebP サポートが有効なら is_animated/n_frames が使える
+                return bool(getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1)
+        except Exception:
+            # 壊れたファイルなどは安全側で False
+            return False
+        
     def _setup_tray_icon(self) -> None:
         """システムトレイアイコンとメニューを作成する"""
         self.tray_icon = QSystemTrayIcon(self)
@@ -439,13 +452,28 @@ class ImageViewer(QMainWindow):
     def update_image_display(self, pixmap: QPixmap) -> None:
         self.stop_movie()
         file_path = self.image_files[self.current_index]
-        if file_path.lower().endswith('.gif'):
-            self.current_movie = QMovie(file_path)
-            self.current_movie.frameChanged.connect(self.on_gif_first_frame)
-            self.current_movie.frameChanged.connect(self.update_gif_frame_status)
-            self.image_label.setMovie(self.current_movie)
-            self.current_movie.start()
-        else:
+        ext = os.path.splitext(file_path)[1].lower()
+        use_movie = False
+
+        if ext == ".gif":
+            use_movie = True
+        elif ext == ".webp" and self._is_animated_webp(file_path):
+            # アニメーション WebP だけ QMovie で扱う
+            use_movie = True
+
+        if use_movie:
+            movie = QMovie(file_path)
+            if movie.isValid():
+                self.current_movie = movie
+                self.current_movie.frameChanged.connect(self.on_gif_first_frame)
+                self.current_movie.frameChanged.connect(self.update_gif_frame_status)
+                self.image_label.setMovie(self.current_movie)
+                self.current_movie.start()
+            else:
+                # 何らかの理由で QMovie が扱えなければ静止画フォールバック
+                use_movie = False
+
+        if not use_movie:
             if pixmap.isNull():
                 self.image_label.setText("画像の読み込みに失敗しました")
                 self.original_pixmap = QPixmap()
@@ -453,7 +481,10 @@ class ImageViewer(QMainWindow):
                 self.original_pixmap = pixmap
             self.redraw_image()
             self.update_status_bar()
-        self.setWindowTitle(f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}")
+
+        self.setWindowTitle(
+            f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}"
+        )
         self.is_loading = False
 
     @pyqtSlot(int)
