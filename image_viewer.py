@@ -4,6 +4,11 @@ import os
 import shutil
 import json
 from typing import Optional, List
+import sys
+import ctypes
+import functools
+import locale
+import re
 
 # --- PyQt6 の import ---
 from PyQt6.QtWidgets import (
@@ -30,6 +35,64 @@ from PyQt6.QtGui import QAction
 from widgets import MetadataDialog
 from worker import ImageLoader
 
+# --- Windows 論理順ソート（Explorer の「名前」順）用ヘルパー ---
+
+# natural_key はフォールバック用。数字を数値として扱う簡易ナチュラルソート。
+_NATURAL_SPLIT_RE = re.compile(r"(\d+)")
+
+def natural_key(path: str):
+    name = os.path.basename(path)
+    parts = _NATURAL_SPLIT_RE.split(name)
+    return tuple(int(p) if p.isdigit() else p.casefold() for p in parts)
+
+
+def _load_windows_logical_comparer():
+    if not sys.platform.startswith("win"):
+        return None
+
+    try:
+        shlwapi = ctypes.windll.Shlwapi
+    except Exception:
+        return None
+
+    try:
+        cmp_func = shlwapi.StrCmpLogicalW
+        cmp_func.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        cmp_func.restype = ctypes.c_int
+    except Exception:
+        return None
+
+    return cmp_func
+
+
+_STRCMP_LOGICALW = _load_windows_logical_comparer()
+
+
+def _create_windows_logical_key(comparer=_STRCMP_LOGICALW):
+    """Windowsの論理順比較に基づくキーを生成する key 関数を返す。"""
+
+    if comparer:
+        def _cmp(a: str, b: str) -> int:
+            # フォルダ内での並び順なので basename だけ比較する
+            return comparer(os.path.basename(a), os.path.basename(b))
+
+        # sorted(..., key=cmp_to_key(_cmp)) という形で使える「key」を返す
+        return functools.cmp_to_key(_cmp)
+
+    # ここから下は非 Windows や DLL が使えないときのフォールバック
+    locale.setlocale(locale.LC_COLLATE, "")  # OS のロケールに合わせる
+    locale_transform = locale.strxfrm
+
+    def _fallback_key(path: str):
+        name = os.path.basename(path)
+        # まずロケール順、同値なら簡易ナチュラル順
+        return (locale_transform(name.casefold()), natural_key(path))
+
+    return _fallback_key
+
+
+# 実際に sorted(..., key=windows_logical_key) で使うキー
+windows_logical_key = _create_windows_logical_key()
 
 class ImageViewer(QMainWindow):
     request_load_image = pyqtSignal(str)
@@ -363,21 +426,35 @@ class ImageViewer(QMainWindow):
         # UIはすぐに表示させ、裏でファイルリストの読み込みを依頼
         self.request_load_list.emit(directory, normalized_path)
 
-    # ★ 修正点 6: 新しいスロットを追加
     @pyqtSlot(list, int)
     def on_file_list_loaded(self, image_list: list, initial_index: int) -> None:
         """ワーカーからのファイルリスト読み込み完了通知を受け取る"""
         if not image_list:
             self.image_label.setText("画像の読み込みに失敗しました。")
             return
-            
-        self.sorted_image_files = image_list
+
+        # 念のため initial_index 範囲チェック
+        if not (0 <= initial_index < len(image_list)):
+            initial_index = 0
+
+        # ワーカーが「最初に開いたファイル」として渡してきたパス
+        selected_path = image_list[initial_index]
+
+        # ★ ここで Windows 論理順（StrCmpLogicalW ベース）でソート
+        self.sorted_image_files = sorted(image_list, key=windows_logical_key)
         self.image_files = list(self.sorted_image_files)
         self.is_shuffled = False
-        self.current_index = initial_index
-        
+
+        # ソート後リスト中で selected_path がどこに来たかを探しなおす
+        try:
+            self.current_index = self.image_files.index(selected_path)
+        except ValueError:
+            # 万が一見つからなければ先頭にフォールバック
+            self.current_index = 0
+
         # ファイルリストの準備ができたので、次に画像の読み込みを開始
         self.load_image_by_index()
+
 
     def load_image_by_index(self) -> None:
         """現在のインデックスに基づいて画像を非同期で読み込む"""
