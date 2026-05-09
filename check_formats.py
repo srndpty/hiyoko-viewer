@@ -1,6 +1,7 @@
 import sys
-from PyQt6.QtWidgets import QApplication
+
 from PyQt6.QtGui import QImageReader
+from PyQt6.QtWidgets import QApplication
 
 # PyQtのアプリケーションインスタンスを作成する必要がある
 # これにより、Qtのプラグインが正しくロードされる
