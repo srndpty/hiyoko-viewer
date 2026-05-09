@@ -1,3 +1,4 @@
+import os
 import sys
 
 import constants
@@ -17,4 +18,4 @@ def test_zoom_factors_are_inverse() -> None:
 def test_resource_path_uses_pyinstaller_meipass(monkeypatch) -> None:
     monkeypatch.setattr(sys, "_MEIPASS", r"C:\bundle", raising=False)
 
-    assert constants.resource_path("app_icon.ico") == r"C:\bundle\app_icon.ico"
+    assert constants.resource_path("app_icon.ico") == os.path.join(r"C:\bundle", "app_icon.ico")

@@ -644,7 +644,7 @@ class ImageViewer(QMainWindow):
             return
         parts: list[str] = []
         w, h = self.original_pixmap.width(), self.original_pixmap.height()
-        fs_mb = f"{self.current_filesize / (1024*1024):.2f}MB"
+        fs_mb = f"{self.current_filesize / (1024 * 1024):.2f}MB"
         parts.append(f"🖼️ {w}x{h}")
         parts.append(f"💾 {fs_mb}")
         if self.fit_to_window:
