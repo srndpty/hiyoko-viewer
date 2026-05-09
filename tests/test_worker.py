@@ -34,3 +34,23 @@ def test_load_file_list_emits_empty_result_for_missing_directory(tmp_path) -> No
     loader.load_file_list(str(tmp_path / "missing"), "missing.png")
 
     assert emitted == [([], -1)]
+
+
+def test_load_file_list_uses_first_image_when_target_is_not_in_directory(tmp_path) -> None:
+    image_a = tmp_path / "a.png"
+    image_b = tmp_path / "b.jpg"
+    image_a.write_bytes(b"fake")
+    image_b.write_bytes(b"fake")
+
+    emitted: list[tuple[list[str], int]] = []
+    loader = ImageLoader()
+    loader.list_loaded.connect(lambda paths, index: emitted.append((paths, index)))
+
+    loader.load_file_list(str(tmp_path), os.path.normcase(str(tmp_path / "missing.png")))
+
+    assert emitted == [
+        (
+            sorted([os.path.normcase(str(image_a)), os.path.normcase(str(image_b))]),
+            0,
+        )
+    ]
