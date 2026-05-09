@@ -77,6 +77,37 @@ pip install -r requirements.txt
 - `C:\Program Files\hiyoko-viewer` を作成してそこにコピーし、`"C:\Program Files\hiyoko-viewer\hiyoko-viewer.exe"`などとなることを確認
 - （`register_app.reg` は用意したけどなんか上手く動かないので、png,jpg,gif,webpあたりを1つずつ手動で登録したほうが早いかも）
 
+## 開発・品質チェック
+
+開発用の依存関係を含めてセットアップします。
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements-dev.txt
+pre-commit install
+```
+
+ローカルでの主な確認コマンド:
+
+```bash
+ruff check .
+ruff format --check .
+pytest
+pre-commit run --all-files
+```
+
+まとめて実行する場合:
+
+```powershell
+.\scripts\check.ps1
+```
+
+`.\scripts\check.ps1 -SkipPreCommit` で `pre-commit run --all-files` だけ省略できます。
+ステージ済み差分も `git diff --cached --check` で確認したい場合は `.\scripts\check.ps1 -CheckStaged` を使います。
+
+`pytest` は `pytest-cov` を通してカバレッジも出力します。GitHub Actions でも同じ lint / format / test を実行します。
+
 
 ## LICENSE
 
