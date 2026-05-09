@@ -119,6 +119,80 @@ def _create_windows_logical_key(comparer=_STRCMP_LOGICALW):
 windows_logical_key = _create_windows_logical_key()
 
 
+NO_METADATA_TEXT = "この画像には表示可能なメタデータが見つかりませんでした。"
+
+
+def extract_metadata_text(image: Image.Image) -> str:
+    metadata_parts = []
+
+    # --- 1. PNGの parameters (AIプロンプト) をチェック ---
+    if image.info:
+        # NovelAI は 'Comment' キーにJSON形式で全パラメータを格納する
+        if "Comment" in image.info:
+            try:
+                nai_data = json.loads(image.info["Comment"])
+
+                metadata_parts.append("--- NovelAI パラメータ (JSON) ---\n")
+                pretty_json = json.dumps(nai_data, indent=2, ensure_ascii=False)
+                metadata_parts.append(pretty_json)
+                metadata_parts.append("\n" + "-" * 20 + "\n")
+
+            except json.JSONDecodeError:
+                metadata_parts.append("--- NovelAI パラメータ (Comment) ---\n")
+                metadata_parts.append(image.info["Comment"])
+                metadata_parts.append("\n" + "-" * 20 + "\n")
+
+        # Stable Diffusion WebUI (A1111) は 'parameters' キーを使用
+        elif "parameters" in image.info:
+            metadata_parts.append("--- AI生成パラメータ (PNG) ---\n")
+            metadata_parts.append(image.info["parameters"])
+            metadata_parts.append("\n" + "-" * 20 + "\n")
+
+        # 念のため、'Description' も表示する (プレーンなプロンプトが入っている場合がある)
+        if "Description" in image.info and "Comment" not in image.info:
+            metadata_parts.append("--- AI生成パラメータ (Description) ---\n")
+            metadata_parts.append(image.info["Description"])
+            metadata_parts.append("\n" + "-" * 20 + "\n")
+
+    # --- 2. Exif データをチェック ---
+    exif_data = image.getexif()
+    if exif_data:
+        from PIL.ExifTags import TAGS
+
+        exif_info = {TAGS.get(key, key): value for key, value in exif_data.items()}
+
+        if "UserComment" in exif_info:
+            try:
+                decoded_comment = exif_info["UserComment"].decode("utf-8", errors="ignore")
+                if decoded_comment.startswith("UNICODE"):
+                    decoded_comment = decoded_comment[8:].lstrip("\x00")
+                metadata_parts.append("--- AI生成パラメータ (UserComment) ---\n")
+                metadata_parts.append(decoded_comment)
+                metadata_parts.append("\n" + "-" * 20 + "\n")
+
+            except (UnicodeDecodeError, AttributeError):
+                pass
+
+        metadata_parts.append("--- Exif 詳細 ---\n")
+        for tag, value in exif_info.items():
+            value_str = str(value)
+            if len(value_str) > 100:
+                value_str = value_str[:100] + "..."
+            metadata_parts.append(f"{tag}: {value_str}")
+
+    if not metadata_parts:
+        return NO_METADATA_TEXT
+    return "\n".join(metadata_parts)
+
+
+def load_metadata_text(file_path: str) -> str:
+    try:
+        with Image.open(file_path) as image:
+            return extract_metadata_text(image)
+    except Exception as e:
+        return f"メタデータの読み込み中にエラーが発生しました:\n{e}"
+
+
 class ImageViewer(QMainWindow):
     request_load_image = pyqtSignal(str)
     request_load_list = pyqtSignal(str, str)
@@ -861,84 +935,7 @@ class ImageViewer(QMainWindow):
 
         file_path = self.image_files[self.current_index]
         file_name = os.path.basename(file_path)
-
-        try:
-            image = Image.open(file_path)
-
-            metadata_parts = []
-
-            # --- 1. PNGの parameters (AIプロンプト) をチェック ---
-            if image.info:
-                # ★★★ ここからが NovelAI 対応の追加箇所 ★★★
-                # NovelAI は 'Comment' キーにJSON形式で全パラメータを格納する
-                if "Comment" in image.info:
-                    try:
-                        # JSON文字列をPythonの辞書にパース
-                        nai_data = json.loads(image.info["Comment"])
-
-                        metadata_parts.append("--- NovelAI パラメータ (JSON) ---\n")
-                        # json.dumpsを使って、インデント付きの綺麗な文字列に変換
-                        pretty_json = json.dumps(nai_data, indent=2, ensure_ascii=False)
-                        metadata_parts.append(pretty_json)
-                        metadata_parts.append("\n" + "-" * 20 + "\n")
-
-                    except json.JSONDecodeError:
-                        # JSONとしてパースできない場合は、生のテキストとして表示
-                        metadata_parts.append("--- NovelAI パラメータ (Comment) ---\n")
-                        metadata_parts.append(image.info["Comment"])
-                        metadata_parts.append("\n" + "-" * 20 + "\n")
-
-                # Stable Diffusion WebUI (A1111) は 'parameters' キーを使用
-                elif "parameters" in image.info:
-                    metadata_parts.append("--- AI生成パラメータ (PNG) ---\n")
-                    metadata_parts.append(image.info["parameters"])
-                    metadata_parts.append("\n" + "-" * 20 + "\n")
-
-                # 念のため、'Description' も表示する (プレーンなプロンプトが入っている場合がある)
-                if "Description" in image.info and "Comment" not in image.info:
-                    metadata_parts.append("--- AI生成パラメータ (Description) ---\n")
-                    metadata_parts.append(image.info["Description"])
-                    metadata_parts.append("\n" + "-" * 20 + "\n")
-
-            # --- 2. Exif データをチェック ---
-            exif_data = image.getexif()
-            if exif_data:
-                # PillowはExifタグをID(数値)で返すので、タグ名に変換する
-                from PIL.ExifTags import TAGS
-
-                exif_info = {TAGS.get(key, key): value for key, value in exif_data.items()}
-
-                # AIプロンプトが含まれている可能性のある主要なExifタグ
-                if "UserComment" in exif_info:
-                    # UserCommentは文字コード情報などが前に付いていることがあるのでデコードを試みる
-                    try:
-                        # Assuming the format might be like b'UNICODE\x00\x00\x00Prompt...'
-                        decoded_comment = exif_info["UserComment"].decode("utf-8", errors="ignore")
-                        # 'UNICODE' and null bytes might be at the start
-                        if decoded_comment.startswith("UNICODE"):
-                            decoded_comment = decoded_comment[8:].lstrip("\x00")
-                        metadata_parts.append("--- AI生成パラメータ (UserComment) ---\n")
-                        metadata_parts.append(decoded_comment)
-                        metadata_parts.append("\n" + "-" * 20 + "\n")
-
-                    except (UnicodeDecodeError, AttributeError):
-                        pass  # デコードできない場合はスキップ
-
-                metadata_parts.append("--- Exif 詳細 ---\n")
-                for tag, value in exif_info.items():
-                    # 値が長すぎる場合は短縮表示
-                    value_str = str(value)
-                    if len(value_str) > 100:
-                        value_str = value_str[:100] + "..."
-                    metadata_parts.append(f"{tag}: {value_str}")
-
-            if not metadata_parts:
-                final_text = "この画像には表示可能なメタデータが見つかりませんでした。"
-            else:
-                final_text = "\n".join(metadata_parts)
-
-        except Exception as e:
-            final_text = f"メタデータの読み込み中にエラーが発生しました:\n{e}"
+        final_text = load_metadata_text(file_path)
 
         # QMessageBox を使って情報を表示
         dialog = MetadataDialog(title=f"メタデータ: {file_name}", content=final_text, parent=self)
