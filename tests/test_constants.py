@@ -19,3 +19,10 @@ def test_resource_path_uses_pyinstaller_meipass(monkeypatch) -> None:
     monkeypatch.setattr(sys, "_MEIPASS", r"C:\bundle", raising=False)
 
     assert constants.resource_path("app_icon.ico") == os.path.join(r"C:\bundle", "app_icon.ico")
+
+
+def test_resource_path_uses_current_directory_without_meipass(monkeypatch, tmp_path) -> None:
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert constants.resource_path("app_icon.ico") == os.path.join(str(tmp_path), "app_icon.ico")
