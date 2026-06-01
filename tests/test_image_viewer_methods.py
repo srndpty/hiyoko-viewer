@@ -1241,6 +1241,7 @@ def test_move_removes_path_from_sorted_image_files(tmp_path) -> None:
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None
+    viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
 
     ImageViewer.move_current_image_and_load_next(viewer, "_ok")
 
@@ -1260,6 +1261,7 @@ def test_delete_removes_path_from_sorted_image_files(monkeypatch, tmp_path) -> N
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None
+    viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
     monkeypatch.setattr(image_viewer, "send2trash", lambda path: None)
 
     ImageViewer.delete_current_image_and_load_next(viewer)

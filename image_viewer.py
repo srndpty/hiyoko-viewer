@@ -11,8 +11,6 @@ import re
 import shutil
 import sys
 
-logger = logging.getLogger(__name__)
-
 from PIL import Image
 from PyQt6.QtCore import QEvent, QObject, QPointF, QSettings, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
@@ -54,6 +52,8 @@ from constants import (
 )
 from widgets import MetadataDialog
 from worker import ImageLoader
+
+logger = logging.getLogger(__name__)
 
 # --- Windows 論理順ソート（Explorer の「名前」順）用ヘルパー ---
 
