@@ -418,13 +418,16 @@ def test_load_image_from_path_requests_directory_scan(tmp_path) -> None:
     emitter = _Emitter()
     calls: list[str] = []
     image_path = tmp_path / "Photo.PNG"
-    viewer = SimpleNamespace(request_load_list=emitter)
+    viewer = SimpleNamespace(request_load_list=emitter, _load_generation=0)
     viewer._clear_display = lambda: calls.append("clear")
 
     ImageViewer.load_image_from_path(viewer, str(image_path))
 
     assert calls == ["clear"]
-    assert emitter.emitted == [(str(tmp_path), os.path.normcase(os.path.normpath(str(image_path))))]
+    assert viewer._load_generation == 1
+    assert emitter.emitted == [
+        (1, str(tmp_path), os.path.normcase(os.path.normpath(str(image_path))))
+    ]
 
 
 def test_load_image_from_path_ignores_empty_path() -> None:
@@ -436,9 +439,9 @@ def test_load_image_from_path_ignores_empty_path() -> None:
 
 def test_on_file_list_loaded_sets_error_text_for_empty_list() -> None:
     label = _ImageLabel()
-    viewer = SimpleNamespace(image_label=label)
+    viewer = SimpleNamespace(image_label=label, _load_generation=0)
 
-    ImageViewer.on_file_list_loaded(viewer, [], -1)
+    ImageViewer.on_file_list_loaded(viewer, 0, [], -1)
 
     assert label.texts == ["画像の読み込みに失敗しました。"]
 
@@ -451,16 +454,36 @@ def test_on_file_list_loaded_sorts_and_keeps_selected_file(monkeypatch) -> None:
         image_files=[],
         is_shuffled=True,
         current_index=-1,
+        _load_generation=1,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
 
-    ImageViewer.on_file_list_loaded(viewer, ["b.png", "a.png"], 0)
+    ImageViewer.on_file_list_loaded(viewer, 1, ["b.png", "a.png"], 0)
 
     assert viewer.sorted_image_files == ["a.png", "b.png"]
     assert viewer.image_files == ["a.png", "b.png"]
     assert viewer.is_shuffled is False
     assert viewer.current_index == 1
     assert loaded == [1]
+
+
+def test_on_file_list_loaded_ignores_stale_generation(monkeypatch) -> None:
+    loaded: list[int] = []
+    monkeypatch.setattr(image_viewer, "windows_logical_key", lambda path: path)
+    viewer = SimpleNamespace(
+        sorted_image_files=[],
+        image_files=[],
+        is_shuffled=False,
+        current_index=-1,
+        _load_generation=2,
+    )
+    viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
+
+    # 世代 1 の結果が返ってきても、現在の世代 2 とは異なるので無視する
+    ImageViewer.on_file_list_loaded(viewer, 1, ["a.png", "b.png"], 0)
+
+    assert viewer.image_files == []
+    assert loaded == []
 
 
 def test_load_image_by_index_emits_current_file(tmp_path) -> None:
@@ -502,10 +525,12 @@ def test_move_current_image_and_load_next_moves_to_subfolder(tmp_path) -> None:
     viewer = SimpleNamespace(
         is_loading=False,
         image_files=[str(image_path), str(next_path)],
+        sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
+    viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
 
     ImageViewer.move_current_image_and_load_next(viewer, OK_FOLDER)
 
@@ -522,10 +547,12 @@ def test_delete_current_image_and_load_next_uses_send2trash(monkeypatch, tmp_pat
     viewer = SimpleNamespace(
         is_loading=False,
         image_files=[str(image_path), str(next_path)],
+        sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
+    viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
     monkeypatch.setattr(image_viewer, "send2trash", trashed.append)
 
     ImageViewer.delete_current_image_and_load_next(viewer)
@@ -596,8 +623,14 @@ def test_move_current_image_and_load_next_clears_when_last_file(tmp_path) -> Non
     image_path = tmp_path / "a.png"
     image_path.write_bytes(b"fake")
     calls: list[str] = []
-    viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
+    viewer = SimpleNamespace(
+        is_loading=False,
+        image_files=[str(image_path)],
+        sorted_image_files=[str(image_path)],
+        current_index=0,
+    )
     viewer._clear_display = lambda: calls.append("clear")
+    viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
 
     ImageViewer.move_current_image_and_load_next(viewer, OK_FOLDER)
 
@@ -621,8 +654,14 @@ def test_move_current_image_and_load_next_reports_errors(monkeypatch, tmp_path) 
 def test_delete_current_image_and_load_next_clears_when_last_file(monkeypatch, tmp_path) -> None:
     image_path = tmp_path / "a.png"
     calls: list[str] = []
-    viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
+    viewer = SimpleNamespace(
+        is_loading=False,
+        image_files=[str(image_path)],
+        sorted_image_files=[str(image_path)],
+        current_index=0,
+    )
     viewer._clear_display = lambda: calls.append("clear")
+    viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
     monkeypatch.setattr(image_viewer, "send2trash", lambda path: None)
 
     ImageViewer.delete_current_image_and_load_next(viewer)
@@ -904,7 +943,7 @@ def test_update_image_display_sets_static_pixmap_and_title() -> None:
     viewer.setWindowTitle = titles.append
 
     pixmap = _Pixmap()
-    ImageViewer.update_image_display(viewer, pixmap)
+    ImageViewer.update_image_display(viewer, "photo.png", pixmap)
 
     assert viewer.original_pixmap is pixmap
     assert viewer.is_loading is False
@@ -927,13 +966,39 @@ def test_update_image_display_uses_movie_for_gif(monkeypatch) -> None:
     viewer.setWindowTitle = titles.append
     monkeypatch.setattr(image_viewer, "QMovie", lambda path: movie)
 
-    ImageViewer.update_image_display(viewer, _Pixmap())
+    ImageViewer.update_image_display(viewer, "animation.gif", _Pixmap())
 
     assert viewer.current_movie is movie
     assert viewer.image_label.movies == [movie]
     assert movie.started is True
     assert viewer.is_loading is False
     assert titles == ["[1/1] animation.gif"]
+
+
+def test_update_image_display_ignores_stale_path() -> None:
+    calls: list[str] = []
+    viewer = SimpleNamespace(
+        image_files=["current.png"],
+        current_index=0,
+        current_movie=None,
+        image_label=_ImageLabel(),
+    )
+    viewer.stop_movie = lambda: calls.append("stop")
+
+    # 古いパスの結果が返ってきたら無視する
+    ImageViewer.update_image_display(viewer, "old.png", _Pixmap())
+
+    assert calls == []
+
+
+def test_update_image_display_ignores_empty_file_list() -> None:
+    calls: list[str] = []
+    viewer = SimpleNamespace(image_files=[], current_index=-1)
+    viewer.stop_movie = lambda: calls.append("stop")
+
+    ImageViewer.update_image_display(viewer, "photo.png", _Pixmap())
+
+    assert calls == []
 
 
 def test_on_gif_first_frame_sets_pixmap_and_disconnects() -> None:
@@ -1087,7 +1152,7 @@ def test_clear_display_resets_viewer_state(monkeypatch) -> None:
     label = _ImageLabel()
     titles: list[str] = []
     calls: list[str] = []
-    viewer = SimpleNamespace(image_label=label)
+    viewer = SimpleNamespace(image_label=label, is_loading=True)
     viewer.stop_movie = lambda: calls.append("stop")
     viewer.statusBar = lambda: status_bar
     viewer.setWindowTitle = titles.append
@@ -1096,6 +1161,7 @@ def test_clear_display_resets_viewer_state(monkeypatch) -> None:
     ImageViewer._clear_display(viewer)
 
     assert calls == ["stop"]
+    assert viewer.is_loading is False
     assert viewer.original_pixmap.isNull() is True
     assert label.texts == [image_viewer.WELCOME_TEXT]
     assert label.styles == [image_viewer.NOTICE_TEXT_STYLE]
@@ -1160,3 +1226,67 @@ def test_save_settings_skips_geometry_when_maximized(monkeypatch) -> None:
     ImageViewer._save_settings(viewer)
 
     assert _Settings.written == {"main_window/maximized": "true"}
+
+
+def test_move_removes_path_from_sorted_image_files(tmp_path) -> None:
+    image_path = tmp_path / "a.png"
+    next_path = tmp_path / "b.png"
+    image_path.write_bytes(b"fake")
+    next_path.write_bytes(b"fake")
+    viewer = SimpleNamespace(
+        is_loading=False,
+        image_files=[str(image_path), str(next_path)],
+        sorted_image_files=[str(image_path), str(next_path)],
+        current_index=0,
+    )
+    viewer.load_image_by_index = lambda: None
+    viewer._clear_display = lambda: None
+
+    ImageViewer.move_current_image_and_load_next(viewer, "_ok")
+
+    assert str(image_path) not in viewer.image_files
+    assert str(image_path) not in viewer.sorted_image_files
+    assert str(next_path) in viewer.sorted_image_files
+
+
+def test_delete_removes_path_from_sorted_image_files(monkeypatch, tmp_path) -> None:
+    image_path = tmp_path / "a.png"
+    next_path = tmp_path / "b.png"
+    viewer = SimpleNamespace(
+        is_loading=False,
+        image_files=[str(image_path), str(next_path)],
+        sorted_image_files=[str(image_path), str(next_path)],
+        current_index=0,
+    )
+    viewer.load_image_by_index = lambda: None
+    viewer._clear_display = lambda: None
+    monkeypatch.setattr(image_viewer, "send2trash", lambda path: None)
+
+    ImageViewer.delete_current_image_and_load_next(viewer)
+
+    assert str(image_path) not in viewer.image_files
+    assert str(image_path) not in viewer.sorted_image_files
+    assert str(next_path) in viewer.sorted_image_files
+
+
+def test_close_event_hides_without_clearing_session() -> None:
+    hidden = []
+    ignored = []
+
+    class _Event:
+        def ignore(self):
+            ignored.append(True)
+
+    viewer = SimpleNamespace(
+        image_files=["photo.png"],
+        current_index=0,
+    )
+    viewer.hide = lambda: hidden.append(True)
+    viewer._clear_display = lambda: (_ for _ in ()).throw(AssertionError("should not clear"))
+
+    ImageViewer.closeEvent(viewer, _Event())
+
+    assert hidden == [True]
+    assert ignored == [True]
+    assert viewer.image_files == ["photo.png"]
+    assert viewer.current_index == 0
