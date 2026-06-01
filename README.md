@@ -60,7 +60,13 @@
 | --------------------------- | ---------------------------------- |
 | `R`                         | ランダム（シャッフル）表示の切替   |
 | `I`                         | メタデータ表示   |
-| `Esc`                       | アプリケーションを終了             |
+| `Esc`                       | ウィンドウを閉じてトレイに格納（完全終了はトレイ右クリック > 完全に終了）|
+
+## アップグレード時の注意
+
+v1.x 以前では設定（ウィンドウサイズ等）を `./settings` フォルダに保存していました。
+現在は Qt 標準のユーザー設定領域（Windows: レジストリの `HKCU\Software\HiyokoSoft\HiyokoViewer`）を使用します。
+旧設定は自動移行されないため、初回起動時にウィンドウ位置がリセットされる場合があります。
 
 ## ビルド方法
 
@@ -69,7 +75,7 @@
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-build.txt
 .\make_build.bat
 ```
 

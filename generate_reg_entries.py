@@ -1,27 +1,4 @@
-SUPPORTED_EXTENSIONS = [
-    ".bmp",
-    ".cur",
-    ".gif",
-    ".icns",
-    ".ico",
-    ".jfif",
-    ".jpeg",
-    ".jpg",
-    ".pbm",
-    ".pdf",
-    ".pgm",
-    ".png",
-    ".ppm",
-    ".svg",
-    ".svgz",
-    ".tga",
-    ".tif",
-    ".tiff",
-    ".wbmp",
-    ".webp",
-    ".xbm",
-    ".xpm",
-]
+from constants import SUPPORTED_EXTENSIONS
 
 # --- セクション2: FileAssociations の生成 ---
 print("=" * 20)

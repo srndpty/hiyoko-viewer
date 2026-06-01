@@ -86,8 +86,6 @@ class MetadataDialog(QDialog):
                 available_font = font_name
                 break  # 最初に見つかったものを使う
 
-        print(f"Using font: {available_font}")  # デバッグ用にどのフォントが選ばれたか表示
-
         # 3. 見つかったフォントを適用
         font = QFont(available_font, 10)
         self.text_edit.setFont(font)

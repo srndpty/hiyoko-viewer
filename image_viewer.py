@@ -4,6 +4,7 @@ import ctypes
 import functools
 import json
 import locale
+import logging
 import os
 import random
 import re
@@ -25,8 +26,6 @@ from PyQt6.QtGui import (
     QPixmap,
     QWheelEvent,
 )
-
-# --- PyQt6 の import ---
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -38,11 +37,8 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QSystemTrayIcon,
 )
-
-# --- 外部ライブラリの import ---
 from send2trash import send2trash
 
-# --- ローカルモジュールの import ---
 from constants import (
     DEFAULT_TITLE,
     NG_FOLDER,
@@ -56,6 +52,8 @@ from constants import (
 )
 from widgets import MetadataDialog
 from worker import ImageLoader
+
+logger = logging.getLogger(__name__)
 
 # --- Windows 論理順ソート（Explorer の「名前」順）用ヘルパー ---
 
@@ -195,7 +193,7 @@ def load_metadata_text(file_path: str) -> str:
 
 class ImageViewer(QMainWindow):
     request_load_image = pyqtSignal(str)
-    request_load_list = pyqtSignal(str, str)
+    request_load_list = pyqtSignal(int, str, str)  # (generation, directory, path)
 
     # --- インスタンス変数の型宣言 (Python 3.6+) ---
     fit_to_window: bool
@@ -219,8 +217,6 @@ class ImageViewer(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "./settings")
         self._init_state_variables()
         self._setup_ui()
         self._setup_worker_thread()
@@ -271,9 +267,8 @@ class ImageViewer(QMainWindow):
 
         self.tray_icon.show()
 
-    # ★ 修正点 3: トレイアイコンがクリックされたときのスロット
     def on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        """トレイアイコンのアクティベーションイベントを処理する"""
+        """トレイアイコンのクリックでウィンドウを復帰する"""
         # 左クリックまたはダブルクリックでウィンドウを表示
         if reason in (
             QSystemTrayIcon.ActivationReason.Trigger,
@@ -297,12 +292,11 @@ class ImageViewer(QMainWindow):
         self.worker_thread = QThread()
         self.image_loader = ImageLoader()
         self.image_loader.moveToThread(self.worker_thread)
-        # ★ 修正点 4: シグナル名を image_loaded に変更し、新しいシグナルを接続
         self.image_loader.image_loaded.connect(self.update_image_display)
-        self.image_loader.list_loaded.connect(self.on_file_list_loaded)  # <<< 新しいスロットを接続
+        self.image_loader.list_loaded.connect(self.on_file_list_loaded)
 
         self.request_load_image.connect(self.image_loader.load_image)
-        self.request_load_list.connect(self.image_loader.load_file_list)  # <<< 新しいスロットを接続
+        self.request_load_list.connect(self.image_loader.load_file_list)
 
         self.worker_thread.start()
 
@@ -310,6 +304,7 @@ class ImageViewer(QMainWindow):
         """状態を管理するインスタンス変数を初期化する"""
         self.fit_to_window = True
         self.is_loading = False
+        self._load_generation = 0
         self.is_shuffled = False
         self.image_files = []
         self.sorted_image_files = []
@@ -439,9 +434,7 @@ class ImageViewer(QMainWindow):
         self.update_status_bar()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """ウィンドウが閉じられるときに呼ばれる"""
-        # ★ 修正点 2: ウィンドウを非表示にする「前」に、表示をクリアする
-        self._clear_display()
+        """ウィンドウを非表示にしてトレイに格納する（セッションは保持）"""
         event.ignore()
         self.hide()
 
@@ -532,16 +525,18 @@ class ImageViewer(QMainWindow):
         if not file_path:
             return
 
-        self._clear_display()  # <<< ★重要★ closeEventからこちらに移動
-        # 重い処理はすべてワーカーに依頼するだけ
+        self._clear_display()
+        self._load_generation += 1
+        generation = self._load_generation
         directory = os.path.dirname(file_path)
         normalized_path = os.path.normcase(os.path.normpath(file_path))
-        # UIはすぐに表示させ、裏でファイルリストの読み込みを依頼
-        self.request_load_list.emit(directory, normalized_path)
+        self.request_load_list.emit(generation, directory, normalized_path)
 
-    @pyqtSlot(list, int)
-    def on_file_list_loaded(self, image_list: list, initial_index: int) -> None:
+    @pyqtSlot(int, list, int)
+    def on_file_list_loaded(self, generation: int, image_list: list, initial_index: int) -> None:
         """ワーカーからのファイルリスト読み込み完了通知を受け取る"""
+        if generation != self._load_generation:
+            return
         if not image_list:
             self.image_label.setText("画像の読み込みに失敗しました。")
             return
@@ -598,6 +593,11 @@ class ImageViewer(QMainWindow):
         )
         self.load_image_by_index()
 
+    def _remove_path_from_lists(self, path: str) -> None:
+        """image_files と sorted_image_files の両方から指定パスを削除する"""
+        self.image_files = [p for p in self.image_files if p != path]
+        self.sorted_image_files = [p for p in self.sorted_image_files if p != path]
+
     def move_current_image_and_load_next(self, subfolder_name: str) -> None:
         if self.is_loading or not self.image_files:
             return
@@ -606,7 +606,7 @@ class ImageViewer(QMainWindow):
         os.makedirs(dest_folder, exist_ok=True)
         try:
             shutil.move(source_path, dest_folder)
-            self.image_files.pop(self.current_index)
+            self._remove_path_from_lists(source_path)
             if not self.image_files:
                 self._clear_display()
             else:
@@ -614,17 +614,17 @@ class ImageViewer(QMainWindow):
                     self.current_index = 0
                 self.load_image_by_index()
         except Exception:
+            logger.exception("ファイルの移動に失敗: %s -> %s", source_path, dest_folder)
             self.statusBar().showMessage("エラー: ファイルの移動に失敗しました", 5000)
 
     def delete_current_image_and_load_next(self) -> None:
-        """現在の画像をごみ箱に移動し、次の画像を読み込む"""
+        """現在の画像をごみ箱に移動し、次の画像を読み込む（確認なし）"""
         if self.is_loading or not self.image_files:
             return
         source_path = self.image_files[self.current_index]
-        # ... (確認ダイアログのロジック) ...
         try:
             send2trash(source_path)
-            self.image_files.pop(self.current_index)
+            self._remove_path_from_lists(source_path)
             if not self.image_files:
                 self._clear_display()
             else:
@@ -632,6 +632,7 @@ class ImageViewer(QMainWindow):
                     self.current_index = 0
                 self.load_image_by_index()
         except Exception:
+            logger.exception("ファイルの削除に失敗: %s", source_path)
             self.statusBar().showMessage("エラー: ファイルの削除に失敗しました", 5000)
 
     # --------------------------------------------------------------------------
@@ -645,10 +646,13 @@ class ImageViewer(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
 
-    @pyqtSlot(QPixmap)
-    def update_image_display(self, pixmap: QPixmap) -> None:
+    @pyqtSlot(str, QPixmap)
+    def update_image_display(self, file_path: str, pixmap: QPixmap) -> None:
+        if not self.image_files or self.current_index < 0:
+            return
+        if self.image_files[self.current_index] != file_path:
+            return
         self.stop_movie()
-        file_path = self.image_files[self.current_index]
         ext = os.path.splitext(file_path)[1].lower()
         use_movie = False
 
@@ -896,6 +900,7 @@ class ImageViewer(QMainWindow):
 
     def _clear_display(self) -> None:
         self.stop_movie()
+        self.is_loading = False
         self.original_pixmap = QPixmap()
         self.image_label.setText(WELCOME_TEXT)
         self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
@@ -930,7 +935,7 @@ class ImageViewer(QMainWindow):
 
     def show_metadata_dialog(self):
         """現在の画像のメタデータを表示するダイアログを開く"""
-        if not self.image_files:
+        if not self.image_files or self.current_index < 0:
             return
 
         file_path = self.image_files[self.current_index]
