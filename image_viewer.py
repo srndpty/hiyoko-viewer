@@ -120,6 +120,35 @@ windows_logical_key = _create_windows_logical_key()
 NO_METADATA_TEXT = "この画像には表示可能なメタデータが見つかりませんでした。"
 
 
+def _decode_exif_user_comment(raw: object) -> str | None:
+    """EXIF UserComment を先頭 8 バイトの文字コード指定子に従ってデコードする。
+
+    bytes 以外（既にデコード済みなど）や中身が空の場合は None を返す。
+    UNICODE 指定子の本体は UTF-16 のため、UTF-8 でデコードすると文字化けする。
+    """
+    if not isinstance(raw, bytes):
+        return None
+
+    if raw.startswith(b"UNICODE\x00"):
+        body = raw[8:]
+        # バイトオーダーは BOM があればそれに従い、無ければ慣例的に UTF-16-LE とみなす
+        if body.startswith((b"\xff\xfe", b"\xfe\xff")):
+            text = body.decode("utf-16", errors="ignore")
+        else:
+            text = body.decode("utf-16-le", errors="ignore")
+    elif raw.startswith(b"ASCII\x00\x00\x00"):
+        text = raw[8:].decode("ascii", errors="ignore")
+    elif raw.startswith(b"\x00" * 8):
+        # 文字コード未指定。慣例的に UTF-8 として扱う
+        text = raw[8:].decode("utf-8", errors="ignore")
+    else:
+        # 指定子の無い独自形式。全体を UTF-8 として読む
+        text = raw.decode("utf-8", errors="ignore")
+
+    text = text.replace("\x00", "").strip()
+    return text or None
+
+
 def extract_metadata_text(image: Image.Image) -> str:
     metadata_parts = []
 
@@ -160,16 +189,11 @@ def extract_metadata_text(image: Image.Image) -> str:
         exif_info = {TAGS.get(key, key): value for key, value in exif_data.items()}
 
         if "UserComment" in exif_info:
-            try:
-                decoded_comment = exif_info["UserComment"].decode("utf-8", errors="ignore")
-                if decoded_comment.startswith("UNICODE"):
-                    decoded_comment = decoded_comment[8:].lstrip("\x00")
+            decoded_comment = _decode_exif_user_comment(exif_info["UserComment"])
+            if decoded_comment:
                 metadata_parts.append("--- AI生成パラメータ (UserComment) ---\n")
                 metadata_parts.append(decoded_comment)
                 metadata_parts.append("\n" + "-" * 20 + "\n")
-
-            except (UnicodeDecodeError, AttributeError):
-                pass
 
         metadata_parts.append("--- Exif 詳細 ---\n")
         for tag, value in exif_info.items():

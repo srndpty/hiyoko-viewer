@@ -52,9 +52,9 @@ def test_extract_metadata_text_ignores_description_when_comment_exists() -> None
 
 def test_extract_metadata_text_includes_exif_user_comment_and_truncates_long_values() -> None:
     long_value = "x" * 120
-    text = extract_metadata_text(
-        _FakeImage(exif={37510: b"UNICODE\x00\x00AI prompt", 270: long_value})
-    )
+    # UNICODE 指定子(8バイト)＋ UTF-16-LE 本体という実際の EXIF UserComment の形式
+    user_comment = b"UNICODE\x00" + "AI prompt".encode("utf-16-le")
+    text = extract_metadata_text(_FakeImage(exif={37510: user_comment, 270: long_value}))
 
     assert "--- AI生成パラメータ (UserComment) ---" in text
     assert "AI prompt" in text
