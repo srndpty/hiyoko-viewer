@@ -5,8 +5,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PyQt6.QtWidgets import QApplication
 
-import widgets
-from widgets import JsonHighlighter, MetadataDialog
+from hiyoko_viewer.ui.dialogs import metadata_dialog as widgets
+from hiyoko_viewer.ui.dialogs.metadata_dialog import JsonHighlighter, MetadataDialog
 
 
 @pytest.fixture(scope="module")

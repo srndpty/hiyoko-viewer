@@ -1,0 +1,2 @@
+- 返答は日本語で
+- git stage, commitはユーザーが行うので、AI Agentは実行してはならない
