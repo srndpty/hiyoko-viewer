@@ -43,7 +43,6 @@ Windows Registry Editor Version 5.00
 ".jpeg"="HiyokoViewer.AssocFile.JPEG"
 ".jpg"="HiyokoViewer.AssocFile.JPG"
 ".pbm"="HiyokoViewer.AssocFile.PBM"
-".pdf"="HiyokoViewer.AssocFile.PDF"
 ".pgm"="HiyokoViewer.AssocFile.PGM"
 ".png"="HiyokoViewer.AssocFile.PNG"
 ".ppm"="HiyokoViewer.AssocFile.PPM"
@@ -89,9 +88,6 @@ Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PBM]
 @="PBM Image File"
-
-[HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PDF]
-@="PDF Image File"
 
 [HKEY_CURRENT_USER\Software\Classes\HiyokoViewer.AssocFile.PGM]
 @="PGM Image File"

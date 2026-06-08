@@ -12,7 +12,6 @@ SUPPORTED_EXTENSIONS = [
     ".jpeg",
     ".jpg",
     ".pbm",
-    ".pdf",
     ".pgm",
     ".png",
     ".ppm",
