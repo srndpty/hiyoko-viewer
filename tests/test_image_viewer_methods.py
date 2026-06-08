@@ -547,8 +547,7 @@ def test_move_current_image_and_load_next_moves_to_subfolder(tmp_path) -> None:
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
-        stop_movie=lambda: None,
-        image_label=_ImageLabel(),
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
@@ -571,8 +570,7 @@ def test_delete_current_image_and_load_next_uses_send2trash(monkeypatch, tmp_pat
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
-        stop_movie=lambda: None,
-        image_label=_ImageLabel(),
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
@@ -653,8 +651,7 @@ def test_move_current_image_and_load_next_clears_when_last_file(tmp_path) -> Non
         image_files=[str(image_path)],
         sorted_image_files=[str(image_path)],
         current_index=0,
-        stop_movie=lambda: None,
-        image_label=_ImageLabel(),
+        _release_current_file_handles=lambda: None,
     )
     viewer._clear_display = lambda: calls.append("clear")
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
@@ -671,8 +668,7 @@ def test_move_current_image_and_load_next_reports_errors(monkeypatch, tmp_path) 
     status_bar = _StatusBar()
     viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
     viewer.statusBar = lambda: status_bar
-    viewer.stop_movie = lambda: None
-    viewer.image_label = _ImageLabel()
+    viewer._release_current_file_handles = lambda: None
     monkeypatch.setattr(navigation.shutil, "move", lambda *args: (_ for _ in ()).throw(OSError))
 
     ImageViewer.move_current_image_and_load_next(viewer, OK_FOLDER)
@@ -688,8 +684,7 @@ def test_delete_current_image_and_load_next_clears_when_last_file(monkeypatch, t
         image_files=[str(image_path)],
         sorted_image_files=[str(image_path)],
         current_index=0,
-        stop_movie=lambda: None,
-        image_label=_ImageLabel(),
+        _release_current_file_handles=lambda: None,
     )
     viewer._clear_display = lambda: calls.append("clear")
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
@@ -706,8 +701,7 @@ def test_delete_current_image_and_load_next_reports_errors(monkeypatch, tmp_path
     status_bar = _StatusBar()
     viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
     viewer.statusBar = lambda: status_bar
-    viewer.stop_movie = lambda: None
-    viewer.image_label = _ImageLabel()
+    viewer._release_current_file_handles = lambda: None
     monkeypatch.setattr(navigation, "send2trash", lambda path: (_ for _ in ()).throw(OSError))
 
     ImageViewer.delete_current_image_and_load_next(viewer)
@@ -1334,8 +1328,7 @@ def test_move_removes_path_from_sorted_image_files(tmp_path) -> None:
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
-        stop_movie=lambda: None,
-        image_label=_ImageLabel(),
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None
@@ -1356,8 +1349,7 @@ def test_delete_removes_path_from_sorted_image_files(monkeypatch, tmp_path) -> N
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
-        stop_movie=lambda: None,
-        image_label=_ImageLabel(),
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None

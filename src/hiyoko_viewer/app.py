@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QSharedMemory
 from PyQt6.QtGui import QIcon
@@ -22,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 # アプリケーションごとにユニークなキー（二重起動防止/IPC 用）
 APP_UNIQUE_KEY = "hiyoko-viewer-unique-key-for-ipc"
+
+
+def setup_logging() -> None:
+    """GUI/PyInstaller(--windowed) 実行では標準出力が見えないため、ファイルに残す。
+
+    %LOCALAPPDATA%\\HiyokoViewer\\logs\\hiyoko-viewer.log（取得できなければカレント）。
+    """
+    log_dir = Path(os.environ.get("LOCALAPPDATA", ".")) / "HiyokoViewer" / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            filename=str(log_dir / "hiyoko-viewer.log"),
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            encoding="utf-8",
+        )
+    except OSError:
+        # ログ用ディレクトリ/ファイルを用意できなくても起動自体は止めない
+        logging.basicConfig(level=logging.INFO)
 
 
 def _forward_to_running_instance() -> None:
@@ -44,6 +64,9 @@ def _forward_to_running_instance() -> None:
 
 def main() -> int:
     """アプリを起動する。新規起動なら QApplication を実行し、終了コードを返す。"""
+    # GUI/PyInstaller 実行でも IPC 失敗等の痕跡を残せるよう、早い段階でログを初期化する
+    setup_logging()
+
     # --- 二重起動防止とインスタンス間通信 ---
     shared_memory = QSharedMemory(APP_UNIQUE_KEY)
 

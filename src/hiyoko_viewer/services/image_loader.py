@@ -6,7 +6,7 @@ import logging
 import os
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QImage, QImageReader
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,11 @@ class ImageLoader(QObject):
 
     @pyqtSlot(int, str)
     def load_image(self, generation: int, file_path: str) -> None:
-        image = QImage(file_path)
+        # QImageReader だと失敗理由（未対応フォーマット/破損/権限等）を errorString で残せる
+        reader = QImageReader(file_path)
+        image = reader.read()
+        if image.isNull():
+            logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())
         self.image_loaded.emit(generation, file_path, image)
 
     @pyqtSlot(int, str, str)

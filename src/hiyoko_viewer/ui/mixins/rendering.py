@@ -154,6 +154,15 @@ class RenderingMixin:
         status_text = "  |  ".join(parts)
         self.statusBar().showMessage(status_text)
 
+    def _release_current_file_handles(self) -> None:
+        """現在表示中のファイルを掴み得るリソース（QMovie）を解放する。
+
+        QMovie は Windows で元ファイルのハンドルを保持し得るため、move/delete の前に
+        明示的に止める。静止画の pixmap は既にメモリ上にあり元ファイルを掴まないので、
+        ラベル表示まで消す必要はない（消すと操作失敗時に表示だけ空になってしまう）。
+        """
+        self.stop_movie()
+
     def stop_movie(self) -> None:
         if self.current_movie:
             try:

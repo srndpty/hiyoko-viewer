@@ -83,16 +83,22 @@ src/hiyoko_viewer/
 └── assets/           # 同梱リソース（app_icon.ico）
 ```
 
-起動方法は次の4通りをサポートします。アイコン等のリソースはいずれの形態でも
+起動方法は次の形態をサポートします。アイコン等のリソースはいずれの形態でも
 解決できるよう、PyInstaller 実行時は `sys._MEIPASS`、それ以外は同梱した
 `hiyoko_viewer.assets` を基準にします。
 
 | 形態 | コマンド | 用途 |
 | --- | --- | --- |
 | 開発実行 | `python main.py` | リポジトリ直下からそのまま起動 |
-| モジュール実行 | `python -m hiyoko_viewer` | `src` を `PYTHONPATH` に通して起動 |
-| インストール後 | `pip install .` 後に `hiyoko-viewer` | console-script として起動 |
+| 開発時のモジュール実行 | `$env:PYTHONPATH="src"; python -m hiyoko_viewer` | 未インストール時は `src` を通す必要がある |
+| インストール後のモジュール実行 | `pip install -e .` 後に `python -m hiyoko_viewer` | editable install 済みならパスは不要 |
+| インストール後 | `pip install .` 後に `hiyoko-viewer` | GUI entry point（コンソール非表示）として起動 |
+| デバッグ起動 | `pip install .` 後に `hiyoko-viewer-console` | コンソール出力を確認したいとき用 |
 | 配布バイナリ | `dist/hiyoko-viewer.exe` | PyInstaller でビルドした exe |
+
+> GUI/`--windowed` 実行では標準出力が見えないため、起動時に
+> `%LOCALAPPDATA%\HiyokoViewer\logs\hiyoko-viewer.log` へログを出力します。
+> IPC 失敗や画像読み込み失敗の調査はこのログを確認してください。
 
 ## ビルド方法
 
@@ -142,16 +148,21 @@ pre-commit run --all-files
 
 ### wheel への同梱確認（任意）
 
-`pip install` 後の `hiyoko-viewer`（console-script / gui-script）や、wheel への
-`app_icon.ico` 同梱は通常の pytest だけでは保証しきれません。配布前に確認したい場合は、
-クリーンな仮想環境に wheel を入れてアセット解決まで通します。
+`pip install` 後の `hiyoko-viewer`（主系は gui-script、補助が `hiyoko-viewer-console`）や、
+wheel への `app_icon.ico` 同梱は通常の pytest だけでは保証しきれません。配布前に確認したい
+場合は、クリーンな仮想環境に wheel を入れてアセット解決とエントリポイントまで通します。
 
 ```powershell
 python -m pip install build
 python -m build
 python -m venv tmp\smoke-venv
 tmp\smoke-venv\Scripts\python -m pip install (Get-ChildItem dist\*.whl | Select-Object -First 1).FullName
+# アセットが wheel に同梱され、解決できること
 tmp\smoke-venv\Scripts\python -c "from hiyoko_viewer.core.resources import resource_path; import os; assert os.path.exists(resource_path('app_icon.ico'))"
+# エントリポイント（gui-script / console-script）が生成されていること
+tmp\smoke-venv\Scripts\python -m pip show -f hiyoko-viewer
+Get-Command tmp\smoke-venv\Scripts\hiyoko-viewer.exe
+Get-Command tmp\smoke-venv\Scripts\hiyoko-viewer-console.exe
 ```
 
 
