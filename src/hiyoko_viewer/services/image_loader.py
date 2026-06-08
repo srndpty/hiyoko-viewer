@@ -24,6 +24,7 @@ class ImageLoader(QObject):
     def load_image(self, generation: int, file_path: str) -> None:
         # QImageReader だと失敗理由（未対応フォーマット/破損/権限等）を errorString で残せる
         reader = QImageReader(file_path)
+        reader.setAutoTransform(True)
         image = reader.read()
         if image.isNull():
             logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())

@@ -28,9 +28,10 @@ APP_UNIQUE_KEY = "hiyoko-viewer-unique-key-for-ipc"
 def setup_logging() -> None:
     """GUI/PyInstaller(--windowed) 実行では標準出力が見えないため、ファイルに残す。
 
-    %LOCALAPPDATA%\\HiyokoViewer\\logs\\hiyoko-viewer.log（取得できなければカレント）。
+    %LOCALAPPDATA%\\HiyokoViewer\\logs\\hiyoko-viewer.log（取得できなければ %TEMP%）。
     """
-    log_dir = Path(os.environ.get("LOCALAPPDATA", ".")) / "HiyokoViewer" / "logs"
+    base_dir = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+    log_dir = Path(base_dir) / "HiyokoViewer" / "logs"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
@@ -38,10 +39,11 @@ def setup_logging() -> None:
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
             encoding="utf-8",
+            force=True,
         )
     except OSError:
         # ログ用ディレクトリ/ファイルを用意できなくても起動自体は止めない
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.INFO, force=True)
 
 
 def _forward_to_running_instance() -> None:

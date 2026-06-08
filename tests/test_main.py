@@ -1,9 +1,9 @@
-import runpy
+import importlib
 
 
 def test_app_module_can_be_imported_without_starting_application() -> None:
-    namespace = runpy.run_module("hiyoko_viewer.app", run_name="imported_for_test")
+    module = importlib.import_module("hiyoko_viewer.app")
 
-    assert "ImageViewer" in namespace
-    assert "QApplication" in namespace
-    assert callable(namespace["main"])
+    assert module.ImageViewer is not None
+    assert module.QApplication is not None
+    assert callable(module.main)
