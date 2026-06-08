@@ -1,6 +1,7 @@
 import os
 from types import SimpleNamespace
 
+import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QMovie
 
@@ -1091,9 +1092,11 @@ def test_redraw_static_image_fit_and_original_size_modes() -> None:
         image_label=label,
         scroll_area=scroll_area,
         original_pixmap=_Pixmap(),
+        svg_renderer=None,
         fit_to_window=True,
         scale_factor=1.5,
     )
+    viewer._scaled_pixmap_for = lambda bounds: ImageViewer._scaled_pixmap_for(viewer, bounds)
 
     ImageViewer._redraw_static_image(viewer)
     viewer.fit_to_window = False
@@ -1107,6 +1110,45 @@ def test_redraw_static_image_fit_and_original_size_modes() -> None:
     assert label.pixmaps[-1].width() == 300
     assert label.pixmaps[-1].height() == 150
     assert label.adjusted is True
+
+
+def test_render_svg_rasterizes_at_requested_size(qapp) -> None:
+    from PyQt6.QtCore import QByteArray, QSize
+    from PyQt6.QtSvg import QSvgRenderer
+
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">'
+        b'<rect width="100" height="50" fill="#3776ab"/></svg>'
+    )
+    renderer = QSvgRenderer(QByteArray(svg))
+    assert renderer.isValid()
+    viewer = SimpleNamespace(svg_renderer=renderer)
+
+    # 固有サイズ(100x50)とは無関係に、要求したピクセルサイズで生成される＝ズームしても鮮明
+    pixmap = ImageViewer._render_svg(viewer, QSize(800, 400))
+
+    assert not pixmap.isNull()
+    assert pixmap.width() == 800
+    assert pixmap.height() == 400
+
+
+def test_aspect_fit_size_keeps_aspect_ratio(qapp) -> None:
+    from PyQt6.QtCore import QSize
+
+    viewer = SimpleNamespace(original_pixmap=_Pixmap(width=100, height=50))
+
+    # 横長(2:1)を 800x800 の枠に収めると 800x400 になる（高さで律速）
+    fitted = ImageViewer._aspect_fit_size(viewer, QSize(800, 800))
+
+    assert (fitted.width(), fitted.height()) == (800, 400)
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
 
 
 def test_redraw_gif_fit_and_original_size_modes() -> None:
