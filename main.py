@@ -27,6 +27,11 @@ if __name__ == "__main__":
 
     shared_memory = QSharedMemory(APP_UNIQUE_KEY)
 
+    # 以前のインスタンスが異常終了して取り残された共有メモリを掃除する。
+    # （Unix系では segment が残ると二度と起動できなくなる。Windowsは自動解放されるため通常no-op）
+    if shared_memory.attach():
+        shared_memory.detach()
+
     # create() が False を返す = すでにメモリが確保されている = 他のインスタンスが実行中
     if not shared_memory.create(1):
         # 実行中のインスタンスにファイルパスを渡して、こちらは終了する
@@ -68,6 +73,8 @@ if __name__ == "__main__":
             viewer.show_window()
 
     local_server.newConnection.connect(handle_new_connection)
+    # 異常終了で取り残されたソケット（主にUnix系）を掃除してから listen する
+    QLocalServer.removeServer(APP_UNIQUE_KEY)
     local_server.listen(APP_UNIQUE_KEY)
 
     # 最初の起動時の引数を処理

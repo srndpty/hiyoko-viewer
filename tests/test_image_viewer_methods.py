@@ -500,6 +500,7 @@ def test_load_image_by_index_emits_current_file(tmp_path) -> None:
         scale_factor=3.0,
         current_filesize=0,
         request_load_image=emitter,
+        _load_generation=4,
     )
     viewer.windowTitle = lambda: "Window"
     viewer.setWindowTitle = titles.append
@@ -513,7 +514,7 @@ def test_load_image_by_index_emits_current_file(tmp_path) -> None:
     assert viewer.current_filesize == len(b"fake image")
     assert titles == ["Window | 読み込み中..."]
     assert status_bar.messages == [("読み込み中...", None)]
-    assert emitter.emitted == [(str(image_path),)]
+    assert emitter.emitted == [(4, str(image_path))]
 
 
 def test_move_current_image_and_load_next_moves_to_subfolder(tmp_path) -> None:
@@ -608,6 +609,7 @@ def test_load_image_by_index_uses_zero_filesize_for_missing_file(tmp_path) -> No
         current_index=0,
         image_files=[str(missing_path)],
         request_load_image=emitter,
+        _load_generation=4,
     )
     viewer.windowTitle = lambda: "Window"
     viewer.setWindowTitle = titles.append
@@ -616,7 +618,7 @@ def test_load_image_by_index_uses_zero_filesize_for_missing_file(tmp_path) -> No
     ImageViewer.load_image_by_index(viewer)
 
     assert viewer.current_filesize == 0
-    assert emitter.emitted == [(str(missing_path),)]
+    assert emitter.emitted == [(4, str(missing_path))]
 
 
 def test_move_current_image_and_load_next_clears_when_last_file(tmp_path) -> None:
@@ -936,6 +938,7 @@ def test_update_image_display_sets_static_pixmap_and_title() -> None:
         current_index=0,
         current_movie=None,
         image_label=_ImageLabel(),
+        _load_generation=1,
     )
     viewer.stop_movie = lambda: calls.append("stop")
     viewer.redraw_image = lambda: calls.append("redraw")
@@ -943,7 +946,7 @@ def test_update_image_display_sets_static_pixmap_and_title() -> None:
     viewer.setWindowTitle = titles.append
 
     pixmap = _Pixmap()
-    ImageViewer.update_image_display(viewer, "photo.png", pixmap)
+    ImageViewer.update_image_display(viewer, 1, "photo.png", pixmap)
 
     assert viewer.original_pixmap is pixmap
     assert viewer.is_loading is False
@@ -959,6 +962,7 @@ def test_update_image_display_uses_movie_for_gif(monkeypatch) -> None:
         current_index=0,
         current_movie=None,
         image_label=_ImageLabel(),
+        _load_generation=1,
     )
     viewer.stop_movie = lambda: None
     viewer.on_gif_first_frame = lambda frame: None
@@ -966,7 +970,7 @@ def test_update_image_display_uses_movie_for_gif(monkeypatch) -> None:
     viewer.setWindowTitle = titles.append
     monkeypatch.setattr(image_viewer, "QMovie", lambda path: movie)
 
-    ImageViewer.update_image_display(viewer, "animation.gif", _Pixmap())
+    ImageViewer.update_image_display(viewer, 1, "animation.gif", _Pixmap())
 
     assert viewer.current_movie is movie
     assert viewer.image_label.movies == [movie]
@@ -982,21 +986,39 @@ def test_update_image_display_ignores_stale_path() -> None:
         current_index=0,
         current_movie=None,
         image_label=_ImageLabel(),
+        _load_generation=1,
     )
     viewer.stop_movie = lambda: calls.append("stop")
 
     # 古いパスの結果が返ってきたら無視する
-    ImageViewer.update_image_display(viewer, "old.png", _Pixmap())
+    ImageViewer.update_image_display(viewer, 1, "old.png", _Pixmap())
 
     assert calls == []
 
 
 def test_update_image_display_ignores_empty_file_list() -> None:
     calls: list[str] = []
-    viewer = SimpleNamespace(image_files=[], current_index=-1)
+    viewer = SimpleNamespace(image_files=[], current_index=-1, _load_generation=1)
     viewer.stop_movie = lambda: calls.append("stop")
 
-    ImageViewer.update_image_display(viewer, "photo.png", _Pixmap())
+    ImageViewer.update_image_display(viewer, 1, "photo.png", _Pixmap())
+
+    assert calls == []
+
+
+def test_update_image_display_ignores_stale_generation() -> None:
+    calls: list[str] = []
+    viewer = SimpleNamespace(
+        image_files=["photo.png"],
+        current_index=0,
+        current_movie=None,
+        image_label=_ImageLabel(),
+        _load_generation=2,
+    )
+    viewer.stop_movie = lambda: calls.append("stop")
+
+    # 別ディレクトリを開き直した後（世代 2）に、古い世代 1 の結果が届いても無視する
+    ImageViewer.update_image_display(viewer, 1, "photo.png", _Pixmap())
 
     assert calls == []
 
