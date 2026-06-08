@@ -1,6 +1,6 @@
 import runpy
 
-import constants
+from hiyoko_viewer.config import constants
 
 
 def test_generate_reg_entries_outputs_file_associations_and_classes(capsys) -> None:

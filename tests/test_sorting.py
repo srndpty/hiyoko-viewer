@@ -1,5 +1,9 @@
-import image_viewer
-from image_viewer import _create_windows_logical_key, _load_windows_logical_comparer, natural_key
+from hiyoko_viewer.core import sorting
+from hiyoko_viewer.core.sorting import (
+    _create_windows_logical_key,
+    _load_windows_logical_comparer,
+    natural_key,
+)
 
 
 def test_natural_key_sorts_numbered_names_by_numeric_value() -> None:
@@ -43,6 +47,6 @@ def test_windows_logical_key_fallback_is_case_insensitive() -> None:
 
 
 def test_load_windows_logical_comparer_returns_none_on_non_windows(monkeypatch) -> None:
-    monkeypatch.setattr(image_viewer.sys, "platform", "linux")
+    monkeypatch.setattr(sorting.sys, "platform", "linux")
 
     assert _load_windows_logical_comparer() is None

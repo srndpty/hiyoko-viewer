@@ -1,4 +1,14 @@
-from constants import SUPPORTED_EXTENSIONS
+"""register_app.reg の FileAssociations / AssocFile 定義を生成する補助スクリプト。"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+# src 配下の hiyoko_viewer パッケージを import できるようにする
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+
+from hiyoko_viewer.config.constants import SUPPORTED_EXTENSIONS  # noqa: E402
 
 # --- セクション2: FileAssociations の生成 ---
 print("=" * 20)

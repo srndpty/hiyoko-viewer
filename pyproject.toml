@@ -1,18 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hiyoko-viewer"
+version = "1.0.0"
+description = "PyQt6 ベースの軽量画像ビューア（ひよこビューア）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "pillow>=11.3.0",
+    "PyQt6>=6.9.1",
+    "Send2Trash>=1.8.3",
+]
+
+# GUI アプリなので既定はコンソールを出さない gui-scripts を使う。
+# デバッグでコンソール出力を見たいときのために -console 版も残す。
+[project.gui-scripts]
+hiyoko-viewer = "hiyoko_viewer.app:main"
+
+[project.scripts]
+hiyoko-viewer-console = "hiyoko_viewer.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"hiyoko_viewer.assets" = ["*.ico"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = [
-    "--cov=.",
+    "--cov=hiyoko_viewer",
     "--cov-report=term-missing",
     "--cov-report=xml",
     "--strict-config",
     "--strict-markers",
 ]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src", "scripts"]
 
 [tool.coverage.run]
 branch = true
-source = ["."]
+source = ["src/hiyoko_viewer"]
 data_file = "tmp/.coverage"
 omit = [
     "tests/*",
@@ -33,6 +64,7 @@ exclude_also = [
 target-version = "py310"
 line-length = 100
 cache-dir = "tmp/ruff-cache"
+src = ["src", "scripts", "tests"]
 extend-exclude = [
     "build",
     "dist",
@@ -42,4 +74,4 @@ extend-exclude = [
 select = ["B", "F", "I", "UP"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["constants", "image_viewer", "widgets", "worker"]
+known-first-party = ["hiyoko_viewer"]

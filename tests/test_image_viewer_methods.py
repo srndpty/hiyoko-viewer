@@ -5,9 +5,12 @@ import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QMovie
 
-import image_viewer
-from constants import OK_FOLDER
-from image_viewer import ImageViewer
+from hiyoko_viewer.config import constants
+from hiyoko_viewer.config.constants import OK_FOLDER
+from hiyoko_viewer.ui import main_window
+from hiyoko_viewer.ui.main_window import ImageViewer
+from hiyoko_viewer.ui.mixins import input as input_events
+from hiyoko_viewer.ui.mixins import navigation, rendering
 
 
 class _ScrollBar:
@@ -209,6 +212,9 @@ class _ImageLabel:
     def setStyleSheet(self, style: str) -> None:
         self.styles.append(style)
 
+    def clear(self) -> None:
+        self.cleared = True
+
 
 class _Viewport:
     def size(self) -> SimpleNamespace:
@@ -273,6 +279,18 @@ class _Pixmap:
         if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], int):
             return _Pixmap(args[0], args[1])
         return _Pixmap(self._width, self._height)
+
+
+class _FakeQPixmap:
+    """worker からの QImage を GUI スレッドで変換する経路の代用。
+
+    update_image_display 内の ``QPixmap.fromImage(image)`` を恒等変換にして、
+    実 GUI リソースを使わずに静止画ロード経路を検証できるようにする。
+    """
+
+    @staticmethod
+    def fromImage(image):
+        return image
 
 
 class _ImageContext:
@@ -449,7 +467,7 @@ def test_on_file_list_loaded_sets_error_text_for_empty_list() -> None:
 
 def test_on_file_list_loaded_sorts_and_keeps_selected_file(monkeypatch) -> None:
     loaded: list[int] = []
-    monkeypatch.setattr(image_viewer, "windows_logical_key", lambda path: path)
+    monkeypatch.setattr(navigation, "windows_logical_key", lambda path: path)
     viewer = SimpleNamespace(
         sorted_image_files=[],
         image_files=[],
@@ -470,7 +488,7 @@ def test_on_file_list_loaded_sorts_and_keeps_selected_file(monkeypatch) -> None:
 
 def test_on_file_list_loaded_ignores_stale_generation(monkeypatch) -> None:
     loaded: list[int] = []
-    monkeypatch.setattr(image_viewer, "windows_logical_key", lambda path: path)
+    monkeypatch.setattr(navigation, "windows_logical_key", lambda path: path)
     viewer = SimpleNamespace(
         sorted_image_files=[],
         image_files=[],
@@ -529,6 +547,7 @@ def test_move_current_image_and_load_next_moves_to_subfolder(tmp_path) -> None:
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
@@ -551,11 +570,12 @@ def test_delete_current_image_and_load_next_uses_send2trash(monkeypatch, tmp_pat
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
-    monkeypatch.setattr(image_viewer, "send2trash", trashed.append)
+    monkeypatch.setattr(navigation, "send2trash", trashed.append)
 
     ImageViewer.delete_current_image_and_load_next(viewer)
 
@@ -631,6 +651,7 @@ def test_move_current_image_and_load_next_clears_when_last_file(tmp_path) -> Non
         image_files=[str(image_path)],
         sorted_image_files=[str(image_path)],
         current_index=0,
+        _release_current_file_handles=lambda: None,
     )
     viewer._clear_display = lambda: calls.append("clear")
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
@@ -647,7 +668,8 @@ def test_move_current_image_and_load_next_reports_errors(monkeypatch, tmp_path) 
     status_bar = _StatusBar()
     viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
     viewer.statusBar = lambda: status_bar
-    monkeypatch.setattr(image_viewer.shutil, "move", lambda *args: (_ for _ in ()).throw(OSError))
+    viewer._release_current_file_handles = lambda: None
+    monkeypatch.setattr(navigation.shutil, "move", lambda *args: (_ for _ in ()).throw(OSError))
 
     ImageViewer.move_current_image_and_load_next(viewer, OK_FOLDER)
 
@@ -662,10 +684,11 @@ def test_delete_current_image_and_load_next_clears_when_last_file(monkeypatch, t
         image_files=[str(image_path)],
         sorted_image_files=[str(image_path)],
         current_index=0,
+        _release_current_file_handles=lambda: None,
     )
     viewer._clear_display = lambda: calls.append("clear")
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
-    monkeypatch.setattr(image_viewer, "send2trash", lambda path: None)
+    monkeypatch.setattr(navigation, "send2trash", lambda path: None)
 
     ImageViewer.delete_current_image_and_load_next(viewer)
 
@@ -678,7 +701,8 @@ def test_delete_current_image_and_load_next_reports_errors(monkeypatch, tmp_path
     status_bar = _StatusBar()
     viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
     viewer.statusBar = lambda: status_bar
-    monkeypatch.setattr(image_viewer, "send2trash", lambda path: (_ for _ in ()).throw(OSError))
+    viewer._release_current_file_handles = lambda: None
+    monkeypatch.setattr(navigation, "send2trash", lambda path: (_ for _ in ()).throw(OSError))
 
     ImageViewer.delete_current_image_and_load_next(viewer)
 
@@ -690,7 +714,7 @@ def test_open_image_requests_selected_file(monkeypatch) -> None:
     viewer = SimpleNamespace(is_loading=False)
     viewer.load_image_from_path = loaded.append
     monkeypatch.setattr(
-        image_viewer.QFileDialog,
+        main_window.QFileDialog,
         "getOpenFileName",
         lambda *args: ("selected.png", ""),
     )
@@ -774,7 +798,7 @@ def test_handle_wheel_event_dispatches_zoom_or_scroll() -> None:
 
 def test_mouse_press_starts_panning_or_toggles_gif(monkeypatch) -> None:
     cursors: list[object] = []
-    monkeypatch.setattr(image_viewer, "QCursor", lambda shape: ("cursor", shape))
+    monkeypatch.setattr(input_events, "QCursor", lambda shape: ("cursor", shape))
     viewer = SimpleNamespace(
         fit_to_window=False,
         space_key_pressed=True,
@@ -797,7 +821,7 @@ def test_mouse_press_starts_panning_or_toggles_gif(monkeypatch) -> None:
 
 def test_mouse_move_and_release_update_panning_state(monkeypatch) -> None:
     cursors: list[object] = []
-    monkeypatch.setattr(image_viewer, "QCursor", lambda shape: ("cursor", shape))
+    monkeypatch.setattr(input_events, "QCursor", lambda shape: ("cursor", shape))
     viewer = SimpleNamespace(
         is_panning=True,
         pan_last_mouse_pos=_Point(4, 8),
@@ -867,7 +891,7 @@ def test_handle_key_press_on_scroll_area_dispatches_commands() -> None:
 
 def test_key_press_event_handles_window_shortcuts(monkeypatch) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(image_viewer, "QCursor", lambda shape: ("cursor", shape))
+    monkeypatch.setattr(input_events, "QCursor", lambda shape: ("cursor", shape))
     viewer = SimpleNamespace(is_loading=False, space_key_pressed=False)
     viewer.setCursor = lambda cursor: calls.append("cursor")
     viewer._toggle_fullscreen = lambda: calls.append("fullscreen")
@@ -913,7 +937,7 @@ def test_key_release_event_clears_space_state() -> None:
 
 def test_is_animated_webp_detects_animated_webp(monkeypatch) -> None:
     monkeypatch.setattr(
-        image_viewer.Image, "open", lambda path: _ImageContext(is_animated=True, n_frames=2)
+        rendering.Image, "open", lambda path: _ImageContext(is_animated=True, n_frames=2)
     )
 
     assert ImageViewer._is_animated_webp(SimpleNamespace(), "image.webp") is True
@@ -923,15 +947,15 @@ def test_is_animated_webp_returns_false_for_static_or_invalid_images(monkeypatch
     assert ImageViewer._is_animated_webp(SimpleNamespace(), "image.png") is False
 
     monkeypatch.setattr(
-        image_viewer.Image, "open", lambda path: _ImageContext(is_animated=True, n_frames=1)
+        rendering.Image, "open", lambda path: _ImageContext(is_animated=True, n_frames=1)
     )
     assert ImageViewer._is_animated_webp(SimpleNamespace(), "image.webp") is False
 
-    monkeypatch.setattr(image_viewer.Image, "open", lambda path: (_ for _ in ()).throw(OSError))
+    monkeypatch.setattr(rendering.Image, "open", lambda path: (_ for _ in ()).throw(OSError))
     assert ImageViewer._is_animated_webp(SimpleNamespace(), "broken.webp") is False
 
 
-def test_update_image_display_sets_static_pixmap_and_title() -> None:
+def test_update_image_display_sets_static_pixmap_and_title(monkeypatch) -> None:
     calls: list[str] = []
     titles: list[str] = []
     viewer = SimpleNamespace(
@@ -945,11 +969,13 @@ def test_update_image_display_sets_static_pixmap_and_title() -> None:
     viewer.redraw_image = lambda: calls.append("redraw")
     viewer.update_status_bar = lambda: calls.append("status")
     viewer.setWindowTitle = titles.append
+    # worker は QImage を渡し、GUI スレッド側で QPixmap.fromImage で変換する
+    monkeypatch.setattr(rendering, "QPixmap", _FakeQPixmap)
 
-    pixmap = _Pixmap()
-    ImageViewer.update_image_display(viewer, 1, "photo.png", pixmap)
+    image = _Pixmap()
+    ImageViewer.update_image_display(viewer, 1, "photo.png", image)
 
-    assert viewer.original_pixmap is pixmap
+    assert viewer.original_pixmap is image
     assert viewer.is_loading is False
     assert calls == ["stop", "redraw", "status"]
     assert titles == ["[1/1] photo.png"]
@@ -969,7 +995,7 @@ def test_update_image_display_uses_movie_for_gif(monkeypatch) -> None:
     viewer.on_gif_first_frame = lambda frame: None
     viewer.update_gif_frame_status = lambda frame: None
     viewer.setWindowTitle = titles.append
-    monkeypatch.setattr(image_viewer, "QMovie", lambda path: movie)
+    monkeypatch.setattr(rendering, "QMovie", lambda path: movie)
 
     ImageViewer.update_image_display(viewer, 1, "animation.gif", _Pixmap())
 
@@ -1075,7 +1101,7 @@ def test_toggle_shuffle_mode_shuffles_and_loads(monkeypatch) -> None:
         is_shuffled=False,
     )
     viewer.load_image_by_index = lambda: calls.append("load")
-    monkeypatch.setattr(image_viewer.random, "shuffle", lambda items: items.reverse())
+    monkeypatch.setattr(navigation.random, "shuffle", lambda items: items.reverse())
 
     ImageViewer._toggle_shuffle_mode(viewer)
 
@@ -1220,24 +1246,24 @@ def test_clear_display_resets_viewer_state(monkeypatch) -> None:
     viewer.stop_movie = lambda: calls.append("stop")
     viewer.statusBar = lambda: status_bar
     viewer.setWindowTitle = titles.append
-    monkeypatch.setattr(image_viewer, "QPixmap", lambda: _Pixmap(is_null=True))
+    monkeypatch.setattr(rendering, "QPixmap", lambda: _Pixmap(is_null=True))
 
     ImageViewer._clear_display(viewer)
 
     assert calls == ["stop"]
     assert viewer.is_loading is False
     assert viewer.original_pixmap.isNull() is True
-    assert label.texts == [image_viewer.WELCOME_TEXT]
-    assert label.styles == [image_viewer.NOTICE_TEXT_STYLE]
+    assert label.texts == [constants.WELCOME_TEXT]
+    assert label.styles == [constants.NOTICE_TEXT_STYLE]
     assert viewer.current_index == -1
     assert status_bar.messages == [("", None)]
-    assert titles == [image_viewer.DEFAULT_TITLE]
+    assert titles == [constants.DEFAULT_TITLE]
 
 
 def test_load_settings_restores_maximized_window(monkeypatch) -> None:
     calls: list[str] = []
     _Settings.values = {"main_window/maximized": "true"}
-    monkeypatch.setattr(image_viewer, "QSettings", _Settings)
+    monkeypatch.setattr(main_window, "QSettings", _Settings)
     viewer = SimpleNamespace()
     viewer.showMaximized = lambda: calls.append("maximized")
     viewer.restoreGeometry = lambda geometry: calls.append("geometry")
@@ -1250,7 +1276,7 @@ def test_load_settings_restores_maximized_window(monkeypatch) -> None:
 def test_load_settings_restores_saved_geometry(monkeypatch) -> None:
     calls: list[bytes] = []
     _Settings.values = {"main_window/maximized": "false", "main_window/geometry": b"geometry"}
-    monkeypatch.setattr(image_viewer, "QSettings", _Settings)
+    monkeypatch.setattr(main_window, "QSettings", _Settings)
     viewer = SimpleNamespace()
     viewer.showMaximized = lambda: (_ for _ in ()).throw(AssertionError)
     viewer.restoreGeometry = calls.append
@@ -1263,7 +1289,7 @@ def test_load_settings_restores_saved_geometry(monkeypatch) -> None:
 def test_save_settings_leaves_fullscreen_and_writes_geometry(monkeypatch) -> None:
     calls: list[str] = []
     _Settings.written = {}
-    monkeypatch.setattr(image_viewer, "QSettings", _Settings)
+    monkeypatch.setattr(main_window, "QSettings", _Settings)
     viewer = SimpleNamespace()
     viewer.isFullScreen = lambda: True
     viewer.showNormal = lambda: calls.append("normal")
@@ -1281,7 +1307,7 @@ def test_save_settings_leaves_fullscreen_and_writes_geometry(monkeypatch) -> Non
 
 def test_save_settings_skips_geometry_when_maximized(monkeypatch) -> None:
     _Settings.written = {}
-    monkeypatch.setattr(image_viewer, "QSettings", _Settings)
+    monkeypatch.setattr(main_window, "QSettings", _Settings)
     viewer = SimpleNamespace()
     viewer.isFullScreen = lambda: False
     viewer.isMaximized = lambda: True
@@ -1302,6 +1328,7 @@ def test_move_removes_path_from_sorted_image_files(tmp_path) -> None:
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None
@@ -1322,11 +1349,12 @@ def test_delete_removes_path_from_sorted_image_files(monkeypatch, tmp_path) -> N
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        _release_current_file_handles=lambda: None,
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
-    monkeypatch.setattr(image_viewer, "send2trash", lambda path: None)
+    monkeypatch.setattr(navigation, "send2trash", lambda path: None)
 
     ImageViewer.delete_current_image_and_load_next(viewer)
 

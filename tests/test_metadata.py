@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-import image_viewer
-from image_viewer import ImageViewer, extract_metadata_text, load_metadata_text
+from hiyoko_viewer.core import metadata
+from hiyoko_viewer.core.metadata import extract_metadata_text, load_metadata_text
+from hiyoko_viewer.ui import main_window
+from hiyoko_viewer.ui.main_window import ImageViewer
 
 
 class _FakeImage:
@@ -70,14 +72,14 @@ def test_extract_metadata_text_skips_non_bytes_user_comment() -> None:
 
 
 def test_extract_metadata_text_returns_no_metadata_message() -> None:
-    assert extract_metadata_text(_FakeImage()) == image_viewer.NO_METADATA_TEXT
+    assert extract_metadata_text(_FakeImage()) == metadata.NO_METADATA_TEXT
 
 
 def test_load_metadata_text_reads_image_without_metadata(tmp_path) -> None:
     image_path = tmp_path / "plain.png"
     Image.new("RGB", (1, 1)).save(image_path)
 
-    assert load_metadata_text(str(image_path)) == image_viewer.NO_METADATA_TEXT
+    assert load_metadata_text(str(image_path)) == metadata.NO_METADATA_TEXT
 
 
 def test_load_metadata_text_reports_open_errors(tmp_path) -> None:
@@ -90,7 +92,7 @@ def test_show_metadata_dialog_passes_loaded_metadata_to_dialog(monkeypatch) -> N
     dialogs: list[dict] = []
     viewer = SimpleNamespace(image_files=[r"C:\images\a.png"], current_index=0)
     monkeypatch.setattr(
-        image_viewer, "load_metadata_text", lambda file_path: f"metadata:{file_path}"
+        main_window, "load_metadata_text", lambda file_path: f"metadata:{file_path}"
     )
 
     class _Dialog:
@@ -100,7 +102,7 @@ def test_show_metadata_dialog_passes_loaded_metadata_to_dialog(monkeypatch) -> N
         def exec(self) -> None:
             dialogs[-1]["executed"] = True
 
-    monkeypatch.setattr(image_viewer, "MetadataDialog", _Dialog)
+    monkeypatch.setattr(main_window, "MetadataDialog", _Dialog)
 
     ImageViewer.show_metadata_dialog(viewer)
 
@@ -117,7 +119,7 @@ def test_show_metadata_dialog_passes_loaded_metadata_to_dialog(monkeypatch) -> N
 def test_show_metadata_dialog_returns_without_images(monkeypatch) -> None:
     viewer = SimpleNamespace(image_files=[])
     monkeypatch.setattr(
-        image_viewer,
+        main_window,
         "MetadataDialog",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not show dialog")),
     )

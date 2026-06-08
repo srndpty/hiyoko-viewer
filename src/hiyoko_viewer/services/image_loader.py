@@ -1,14 +1,20 @@
+"""バックグラウンドスレッドで画像とファイルリストを読み込むワーカー。"""
+
+from __future__ import annotations
+
 import logging
 import os
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QImage, QImageReader
 
 logger = logging.getLogger(__name__)
 
 
 class ImageLoader(QObject):
-    image_loaded = pyqtSignal(int, str, QPixmap)  # (generation, file_path, pixmap)
+    # QPixmap は GUI リソースで GUI スレッド専用のため、worker では QImage までに留め、
+    # QPixmap への変換は受信側（GUI スレッド）の update_image_display で行う。
+    image_loaded = pyqtSignal(int, str, QImage)  # (generation, file_path, image)
     list_loaded = pyqtSignal(int, list, int)  # (generation, file_list, initial_index)
 
     def __init__(self) -> None:
@@ -16,13 +22,18 @@ class ImageLoader(QObject):
 
     @pyqtSlot(int, str)
     def load_image(self, generation: int, file_path: str) -> None:
-        pixmap = QPixmap(file_path)
-        self.image_loaded.emit(generation, file_path, pixmap)
+        # QImageReader だと失敗理由（未対応フォーマット/破損/権限等）を errorString で残せる
+        reader = QImageReader(file_path)
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
+            logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())
+        self.image_loaded.emit(generation, file_path, image)
 
     @pyqtSlot(int, str, str)
     def load_file_list(self, generation: int, directory: str, target_path: str) -> None:
         """指定されたディレクトリをスキャンし、ファイルリストと初期インデックスを返す"""
-        from constants import SUPPORTED_EXTENSIONS  # ローカルでインポート
+        from ..config.constants import SUPPORTED_EXTENSIONS
 
         try:
             # 表示にもそのまま使うため、元の大文字小文字を保持したパスを返す。

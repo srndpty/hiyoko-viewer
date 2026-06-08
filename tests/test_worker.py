@@ -1,6 +1,6 @@
 import os
 
-from worker import ImageLoader
+from hiyoko_viewer.services.image_loader import ImageLoader
 
 
 def test_load_file_list_emits_supported_images_in_original_case(tmp_path) -> None:
