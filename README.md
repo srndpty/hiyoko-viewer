@@ -140,6 +140,20 @@ pre-commit run --all-files
 
 `pytest` は `pytest-cov` を通してカバレッジも出力します。GitHub Actions でも同じ lint / format / test を実行します。
 
+### wheel への同梱確認（任意）
+
+`pip install` 後の `hiyoko-viewer`（console-script / gui-script）や、wheel への
+`app_icon.ico` 同梱は通常の pytest だけでは保証しきれません。配布前に確認したい場合は、
+クリーンな仮想環境に wheel を入れてアセット解決まで通します。
+
+```powershell
+python -m pip install build
+python -m build
+python -m venv tmp\smoke-venv
+tmp\smoke-venv\Scripts\python -m pip install (Get-ChildItem dist\*.whl | Select-Object -First 1).FullName
+tmp\smoke-venv\Scripts\python -c "from hiyoko_viewer.core.resources import resource_path; import os; assert os.path.exists(resource_path('app_icon.ico'))"
+```
+
 
 ## LICENSE
 

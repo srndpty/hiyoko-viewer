@@ -212,6 +212,9 @@ class _ImageLabel:
     def setStyleSheet(self, style: str) -> None:
         self.styles.append(style)
 
+    def clear(self) -> None:
+        self.cleared = True
+
 
 class _Viewport:
     def size(self) -> SimpleNamespace:
@@ -276,6 +279,18 @@ class _Pixmap:
         if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], int):
             return _Pixmap(args[0], args[1])
         return _Pixmap(self._width, self._height)
+
+
+class _FakeQPixmap:
+    """worker からの QImage を GUI スレッドで変換する経路の代用。
+
+    update_image_display 内の ``QPixmap.fromImage(image)`` を恒等変換にして、
+    実 GUI リソースを使わずに静止画ロード経路を検証できるようにする。
+    """
+
+    @staticmethod
+    def fromImage(image):
+        return image
 
 
 class _ImageContext:
@@ -532,6 +547,8 @@ def test_move_current_image_and_load_next_moves_to_subfolder(tmp_path) -> None:
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        stop_movie=lambda: None,
+        image_label=_ImageLabel(),
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
@@ -554,6 +571,8 @@ def test_delete_current_image_and_load_next_uses_send2trash(monkeypatch, tmp_pat
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        stop_movie=lambda: None,
+        image_label=_ImageLabel(),
     )
     viewer.load_image_by_index = lambda: loaded.append(viewer.current_index)
     viewer._clear_display = lambda: loaded.append(-1)
@@ -634,6 +653,8 @@ def test_move_current_image_and_load_next_clears_when_last_file(tmp_path) -> Non
         image_files=[str(image_path)],
         sorted_image_files=[str(image_path)],
         current_index=0,
+        stop_movie=lambda: None,
+        image_label=_ImageLabel(),
     )
     viewer._clear_display = lambda: calls.append("clear")
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
@@ -650,6 +671,8 @@ def test_move_current_image_and_load_next_reports_errors(monkeypatch, tmp_path) 
     status_bar = _StatusBar()
     viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
     viewer.statusBar = lambda: status_bar
+    viewer.stop_movie = lambda: None
+    viewer.image_label = _ImageLabel()
     monkeypatch.setattr(navigation.shutil, "move", lambda *args: (_ for _ in ()).throw(OSError))
 
     ImageViewer.move_current_image_and_load_next(viewer, OK_FOLDER)
@@ -665,6 +688,8 @@ def test_delete_current_image_and_load_next_clears_when_last_file(monkeypatch, t
         image_files=[str(image_path)],
         sorted_image_files=[str(image_path)],
         current_index=0,
+        stop_movie=lambda: None,
+        image_label=_ImageLabel(),
     )
     viewer._clear_display = lambda: calls.append("clear")
     viewer._remove_path_from_lists = lambda path: ImageViewer._remove_path_from_lists(viewer, path)
@@ -681,6 +706,8 @@ def test_delete_current_image_and_load_next_reports_errors(monkeypatch, tmp_path
     status_bar = _StatusBar()
     viewer = SimpleNamespace(is_loading=False, image_files=[str(image_path)], current_index=0)
     viewer.statusBar = lambda: status_bar
+    viewer.stop_movie = lambda: None
+    viewer.image_label = _ImageLabel()
     monkeypatch.setattr(navigation, "send2trash", lambda path: (_ for _ in ()).throw(OSError))
 
     ImageViewer.delete_current_image_and_load_next(viewer)
@@ -934,7 +961,7 @@ def test_is_animated_webp_returns_false_for_static_or_invalid_images(monkeypatch
     assert ImageViewer._is_animated_webp(SimpleNamespace(), "broken.webp") is False
 
 
-def test_update_image_display_sets_static_pixmap_and_title() -> None:
+def test_update_image_display_sets_static_pixmap_and_title(monkeypatch) -> None:
     calls: list[str] = []
     titles: list[str] = []
     viewer = SimpleNamespace(
@@ -948,11 +975,13 @@ def test_update_image_display_sets_static_pixmap_and_title() -> None:
     viewer.redraw_image = lambda: calls.append("redraw")
     viewer.update_status_bar = lambda: calls.append("status")
     viewer.setWindowTitle = titles.append
+    # worker は QImage を渡し、GUI スレッド側で QPixmap.fromImage で変換する
+    monkeypatch.setattr(rendering, "QPixmap", _FakeQPixmap)
 
-    pixmap = _Pixmap()
-    ImageViewer.update_image_display(viewer, 1, "photo.png", pixmap)
+    image = _Pixmap()
+    ImageViewer.update_image_display(viewer, 1, "photo.png", image)
 
-    assert viewer.original_pixmap is pixmap
+    assert viewer.original_pixmap is image
     assert viewer.is_loading is False
     assert calls == ["stop", "redraw", "status"]
     assert titles == ["[1/1] photo.png"]
@@ -1305,6 +1334,8 @@ def test_move_removes_path_from_sorted_image_files(tmp_path) -> None:
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        stop_movie=lambda: None,
+        image_label=_ImageLabel(),
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None
@@ -1325,6 +1356,8 @@ def test_delete_removes_path_from_sorted_image_files(monkeypatch, tmp_path) -> N
         image_files=[str(image_path), str(next_path)],
         sorted_image_files=[str(image_path), str(next_path)],
         current_index=0,
+        stop_movie=lambda: None,
+        image_label=_ImageLabel(),
     )
     viewer.load_image_by_index = lambda: None
     viewer._clear_display = lambda: None

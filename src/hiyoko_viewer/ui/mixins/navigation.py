@@ -100,6 +100,10 @@ class NavigationMixin:
         if self.is_loading or not self.image_files:
             return
         source_path = self.image_files[self.current_index]
+        # GIF/animated WebP 表示中は QMovie がファイルハンドルを掴んでおり、
+        # Windows では掴んだまま move すると失敗するため、先に解放する。
+        self.stop_movie()
+        self.image_label.clear()
         dest_folder = os.path.join(os.path.dirname(source_path), subfolder_name)
         os.makedirs(dest_folder, exist_ok=True)
         try:
@@ -120,6 +124,9 @@ class NavigationMixin:
         if self.is_loading or not self.image_files:
             return
         source_path = self.image_files[self.current_index]
+        # 削除でも同様に、QMovie が掴むファイルハンドルを先に解放する。
+        self.stop_movie()
+        self.image_label.clear()
         try:
             send2trash(source_path)
             self._remove_path_from_lists(source_path)

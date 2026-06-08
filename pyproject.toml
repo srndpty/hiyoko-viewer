@@ -15,8 +15,13 @@ dependencies = [
     "Send2Trash>=1.8.3",
 ]
 
-[project.scripts]
+# GUI アプリなので既定はコンソールを出さない gui-scripts を使う。
+# デバッグでコンソール出力を見たいときのために -console 版も残す。
+[project.gui-scripts]
 hiyoko-viewer = "hiyoko_viewer.app:main"
+
+[project.scripts]
+hiyoko-viewer-console = "hiyoko_viewer.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

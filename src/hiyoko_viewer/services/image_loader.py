@@ -6,13 +6,15 @@ import logging
 import os
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QImage
 
 logger = logging.getLogger(__name__)
 
 
 class ImageLoader(QObject):
-    image_loaded = pyqtSignal(int, str, QPixmap)  # (generation, file_path, pixmap)
+    # QPixmap は GUI リソースで GUI スレッド専用のため、worker では QImage までに留め、
+    # QPixmap への変換は受信側（GUI スレッド）の update_image_display で行う。
+    image_loaded = pyqtSignal(int, str, QImage)  # (generation, file_path, image)
     list_loaded = pyqtSignal(int, list, int)  # (generation, file_list, initial_index)
 
     def __init__(self) -> None:
@@ -20,8 +22,8 @@ class ImageLoader(QObject):
 
     @pyqtSlot(int, str)
     def load_image(self, generation: int, file_path: str) -> None:
-        pixmap = QPixmap(file_path)
-        self.image_loaded.emit(generation, file_path, pixmap)
+        image = QImage(file_path)
+        self.image_loaded.emit(generation, file_path, image)
 
     @pyqtSlot(int, str, str)
     def load_file_list(self, generation: int, directory: str, target_path: str) -> None:

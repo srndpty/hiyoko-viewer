@@ -106,7 +106,17 @@ def main() -> int:
         viewer.worker_thread.quit()
         # 画像ロード中などで終わらない場合に GUI が終了不能になるのを避けるためタイムアウトを付ける
         if not viewer.worker_thread.wait(3000):
-            logger.warning("worker thread did not finish in time; terminating")
+            current_file = (
+                viewer.image_files[viewer.current_index]
+                if 0 <= viewer.current_index < len(viewer.image_files)
+                else None
+            )
+            logger.warning(
+                "worker thread did not finish in time; terminating; current_index=%s current_file=%s",
+                getattr(viewer, "current_index", None),
+                current_file,
+            )
+            # terminate は任意地点で worker を停止するため deleteLater が走らない可能性がある（終了時の最終保険）
             viewer.worker_thread.terminate()
             viewer.worker_thread.wait(1000)
 

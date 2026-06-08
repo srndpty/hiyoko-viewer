@@ -37,8 +37,8 @@ class RenderingMixin:
             # 壊れたファイルなどは安全側で False
             return False
 
-    @pyqtSlot(int, str, QPixmap)
-    def update_image_display(self, generation: int, file_path: str, pixmap: QPixmap) -> None:
+    @pyqtSlot(int, str, QImage)
+    def update_image_display(self, generation: int, file_path: str, image: QImage) -> None:
         # 別ディレクトリを開き直した後に届いた古い結果は無視する
         if generation != self._load_generation:
             return
@@ -84,11 +84,12 @@ class RenderingMixin:
                     size = QSize(512, 512)
                 # original_pixmap は固有サイズの基準（サイズ表示・アスペクト比）として保持
                 self.original_pixmap = self._render_svg(size)
-            elif pixmap.isNull():
+            elif image.isNull():
                 self.image_label.setText("画像の読み込みに失敗しました")
                 self.original_pixmap = QPixmap()
             else:
-                self.original_pixmap = pixmap
+                # QPixmap への変換は GUI スレッドであるここで行う
+                self.original_pixmap = QPixmap.fromImage(image)
             self.redraw_image()
             self.update_status_bar()
 
