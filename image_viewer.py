@@ -192,7 +192,7 @@ def load_metadata_text(file_path: str) -> str:
 
 
 class ImageViewer(QMainWindow):
-    request_load_image = pyqtSignal(str)
+    request_load_image = pyqtSignal(int, str)  # (generation, path)
     request_load_list = pyqtSignal(int, str, str)  # (generation, directory, path)
 
     # --- インスタンス変数の型宣言 (Python 3.6+) ---
@@ -577,7 +577,7 @@ class ImageViewer(QMainWindow):
             self.current_filesize = 0
         self.setWindowTitle(f"{self.windowTitle()} | 読み込み中...")
         self.statusBar().showMessage("読み込み中...")
-        self.request_load_image.emit(file_path)
+        self.request_load_image.emit(self._load_generation, file_path)
 
     def show_next_image(self) -> None:
         if self.is_loading or not self.image_files:
@@ -646,8 +646,11 @@ class ImageViewer(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
 
-    @pyqtSlot(str, QPixmap)
-    def update_image_display(self, file_path: str, pixmap: QPixmap) -> None:
+    @pyqtSlot(int, str, QPixmap)
+    def update_image_display(self, generation: int, file_path: str, pixmap: QPixmap) -> None:
+        # 別ディレクトリを開き直した後に届いた古い結果は無視する
+        if generation != self._load_generation:
+            return
         if not self.image_files or self.current_index < 0:
             return
         if self.image_files[self.current_index] != file_path:
@@ -840,7 +843,7 @@ class ImageViewer(QMainWindow):
         old_scale_factor = self.scale_factor
         if self.fit_to_window:
             pixmap_size = self.original_pixmap.size()
-            if pixmap_size.width() == 0:
+            if pixmap_size.width() == 0 or pixmap_size.height() == 0:
                 return
             vp_size = self.scroll_area.viewport().size()
             scale = min(
@@ -916,8 +919,10 @@ class ImageViewer(QMainWindow):
         if settings.value("main_window/maximized", "false", type=str).lower() == "true":
             self.showMaximized()
         else:
+            # QSettings は保存した QByteArray を bytes ではなく QByteArray として
+            # 返すことがあるため、型ではなく中身の有無で判定する
             geometry = settings.value("main_window/geometry")
-            if isinstance(geometry, bytes):
+            if geometry:
                 self.restoreGeometry(geometry)
 
     def _save_settings(self) -> None:
