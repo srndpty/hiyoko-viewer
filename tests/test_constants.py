@@ -22,8 +22,11 @@ def test_resource_path_uses_pyinstaller_meipass(monkeypatch) -> None:
     assert resources.resource_path("app_icon.ico") == os.path.join(r"C:\bundle", "app_icon.ico")
 
 
-def test_resource_path_uses_current_directory_without_meipass(monkeypatch, tmp_path) -> None:
+def test_resource_path_points_to_packaged_asset_without_meipass(monkeypatch) -> None:
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-    monkeypatch.chdir(tmp_path)
 
-    assert resources.resource_path("app_icon.ico") == os.path.join(str(tmp_path), "app_icon.ico")
+    path = resources.resource_path("app_icon.ico")
+
+    # PyInstaller 以外の実行ではパッケージ同梱アセットを指し、実体が存在する
+    assert path.endswith(os.path.join("hiyoko_viewer", "assets", "app_icon.ico"))
+    assert os.path.exists(path)

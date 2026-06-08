@@ -147,6 +147,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.worker_thread = QThread()
         self.image_loader = ImageLoader()
         self.image_loader.moveToThread(self.worker_thread)
+        # 別スレッドへ移した QObject は、そのスレッドの終了時にイベントループ上で破棄する
+        self.worker_thread.finished.connect(self.image_loader.deleteLater)
         self.image_loader.image_loaded.connect(self.update_image_display)
         self.image_loader.list_loaded.connect(self.on_file_list_loaded)
 

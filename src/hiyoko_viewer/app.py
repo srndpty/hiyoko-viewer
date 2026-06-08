@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -17,6 +18,8 @@ from PyQt6.QtWidgets import QApplication
 from .core.resources import resource_path
 from .ui.main_window import ImageViewer
 
+logger = logging.getLogger(__name__)
+
 # アプリケーションごとにユニークなキー（二重起動防止/IPC 用）
 APP_UNIQUE_KEY = "hiyoko-viewer-unique-key-for-ipc"
 
@@ -25,12 +28,18 @@ def _forward_to_running_instance() -> None:
     """実行中のインスタンスにファイルパスを渡して、このプロセスは終了する。"""
     socket = QLocalSocket()
     socket.connectToServer(APP_UNIQUE_KEY)
-    if socket.waitForConnected(500):  # 500ms 待つ
-        # 2番目以降の引数（ファイルパス）をUTF-8でエンコードして送信
-        args_to_send = sys.argv[1:] if len(sys.argv) > 1 else []
-        data = "\n".join(args_to_send).encode("utf-8")
-        socket.write(data)
-        socket.waitForBytesWritten(500)
+    if not socket.waitForConnected(500):  # 500ms 待つ
+        # 既存インスタンスを検出したのに繋がらない＝渡したファイルが開かれない状況。
+        # 黙って終わるとユーザーには「何も起きない」ので、原因を残す。
+        logger.warning(
+            "running instance was detected but IPC connection failed: %s", socket.errorString()
+        )
+        return
+    # 2番目以降の引数（ファイルパス）をUTF-8でエンコードして送信
+    args_to_send = sys.argv[1:] if len(sys.argv) > 1 else []
+    data = "\n".join(args_to_send).encode("utf-8")
+    socket.write(data)
+    socket.waitForBytesWritten(500)
 
 
 def main() -> int:
@@ -77,7 +86,9 @@ def main() -> int:
     local_server.newConnection.connect(handle_new_connection)
     # 異常終了で取り残されたソケット（主にUnix系）を掃除してから listen する
     QLocalServer.removeServer(APP_UNIQUE_KEY)
-    local_server.listen(APP_UNIQUE_KEY)
+    if not local_server.listen(APP_UNIQUE_KEY):
+        # listen できないと2個目以降の起動からファイルを受け取れない（致命ではないので続行）
+        logger.warning("failed to listen IPC server: %s", local_server.errorString())
 
     # 最初の起動時の引数を処理
     if len(sys.argv) > 1:
@@ -87,12 +98,20 @@ def main() -> int:
     viewer.show()
 
     def cleanup_on_quit():
-        # 共有メモリを解放する
-        shared_memory.detach()
+        # ウィンドウ状態の保存はワーカー停止より先に行う。
+        # （後段の wait が万一固まっても設定だけは確実に残す）
+        viewer._save_settings()
+        viewer.stop_movie()
 
         viewer.worker_thread.quit()
-        viewer.worker_thread.wait()
-        viewer._save_settings()
+        # 画像ロード中などで終わらない場合に GUI が終了不能になるのを避けるためタイムアウトを付ける
+        if not viewer.worker_thread.wait(3000):
+            logger.warning("worker thread did not finish in time; terminating")
+            viewer.worker_thread.terminate()
+            viewer.worker_thread.wait(1000)
+
+        # 共有メモリを解放する
+        shared_memory.detach()
 
     app.aboutToQuit.connect(cleanup_on_quit)
 

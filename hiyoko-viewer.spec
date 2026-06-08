@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('app_icon.ico', '.')],
+    datas=[('src/hiyoko_viewer/assets/app_icon.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -32,7 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['app_icon.ico'],
+    icon=['src/hiyoko_viewer/assets/app_icon.ico'],
 )
 coll = COLLECT(
     exe,

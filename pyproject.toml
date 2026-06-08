@@ -21,6 +21,9 @@ hiyoko-viewer = "hiyoko_viewer.app:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"hiyoko_viewer.assets" = ["*.ico"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = [

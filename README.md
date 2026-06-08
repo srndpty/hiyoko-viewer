@@ -1,4 +1,4 @@
-![app_icon.ico](app_icon.ico)
+![app_icon.ico](src/hiyoko_viewer/assets/app_icon.ico)
 
 # ひよこビューア (Hiyoko Viewer)
 ![alt text](doc/ss.png)
@@ -67,6 +67,32 @@
 v1.x 以前では設定（ウィンドウサイズ等）を `./settings` フォルダに保存していました。
 現在は Qt 標準のユーザー設定領域（Windows: レジストリの `HKCU\Software\HiyokoSoft\HiyokoViewer`）を使用します。
 旧設定は自動移行されないため、初回起動時にウィンドウ位置がリセットされる場合があります。
+
+## プロジェクト構成と起動方法
+
+ソースは `src/` レイアウトのパッケージ `hiyoko_viewer` に分割しています。
+
+```text
+src/hiyoko_viewer/
+├── app.py            # 起動処理（二重起動防止 / インスタンス間通信）
+├── __main__.py       # python -m hiyoko_viewer の入口
+├── config/           # 定数
+├── core/             # Qt 非依存のロジック（metadata / sorting / resources）
+├── services/         # バックグラウンド処理（image_loader）
+├── ui/               # 画面（main_window と mixins, dialogs）
+└── assets/           # 同梱リソース（app_icon.ico）
+```
+
+起動方法は次の4通りをサポートします。アイコン等のリソースはいずれの形態でも
+解決できるよう、PyInstaller 実行時は `sys._MEIPASS`、それ以外は同梱した
+`hiyoko_viewer.assets` を基準にします。
+
+| 形態 | コマンド | 用途 |
+| --- | --- | --- |
+| 開発実行 | `python main.py` | リポジトリ直下からそのまま起動 |
+| モジュール実行 | `python -m hiyoko_viewer` | `src` を `PYTHONPATH` に通して起動 |
+| インストール後 | `pip install .` 後に `hiyoko-viewer` | console-script として起動 |
+| 配布バイナリ | `dist/hiyoko-viewer.exe` | PyInstaller でビルドした exe |
 
 ## ビルド方法
 
