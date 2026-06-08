@@ -12,7 +12,17 @@ import shutil
 import sys
 
 from PIL import Image
-from PyQt6.QtCore import QEvent, QObject, QPointF, QSettings, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QSettings,
+    QSize,
+    Qt,
+    QThread,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
@@ -20,12 +30,15 @@ from PyQt6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QIcon,
+    QImage,
     QKeyEvent,
     QMouseEvent,
     QMovie,
+    QPainter,
     QPixmap,
     QWheelEvent,
 )
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -227,6 +240,7 @@ class ImageViewer(QMainWindow):
     sorted_image_files: list[str]
     current_index: int
     original_pixmap: QPixmap
+    svg_renderer: QSvgRenderer | None
     current_movie: QMovie | None
     current_filesize: int
     scale_factor: float
@@ -334,6 +348,7 @@ class ImageViewer(QMainWindow):
         self.sorted_image_files = []
         self.current_index = -1
         self.original_pixmap = QPixmap()
+        self.svg_renderer = None
         self.current_movie = None
         self.current_filesize = 0
         self.scale_factor = 1.0
@@ -690,6 +705,7 @@ class ImageViewer(QMainWindow):
             use_movie = True
 
         if use_movie:
+            self.svg_renderer = None
             movie = QMovie(file_path)
             if movie.isValid():
                 self.current_movie = movie
@@ -702,7 +718,21 @@ class ImageViewer(QMainWindow):
                 use_movie = False
 
         if not use_movie:
-            if pixmap.isNull():
+            # SVG はベクターのまま保持し、ズーム/フィットのたびに再ラスタライズする。
+            # （worker が渡す pixmap は固有サイズの 1 回ラスタライズで、拡大するとガビガビになるため）
+            self.svg_renderer = None
+            if ext in (".svg", ".svgz"):
+                renderer = QSvgRenderer(file_path)
+                if renderer.isValid():
+                    self.svg_renderer = renderer
+
+            if self.svg_renderer is not None:
+                size = self.svg_renderer.defaultSize()
+                if size.isEmpty():
+                    size = QSize(512, 512)
+                # original_pixmap は固有サイズの基準（サイズ表示・アスペクト比）として保持
+                self.original_pixmap = self._render_svg(size)
+            elif pixmap.isNull():
                 self.image_label.setText("画像の読み込みに失敗しました")
                 self.original_pixmap = QPixmap()
             else:
@@ -809,22 +839,51 @@ class ImageViewer(QMainWindow):
         self.image_label.setScaledContents(False)
         if self.fit_to_window:
             self.scroll_area.setWidgetResizable(True)
-            scaled_pixmap = self.original_pixmap.scaled(
-                self.scroll_area.viewport().size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            scaled_pixmap = self._scaled_pixmap_for(self.scroll_area.viewport().size())
             self.image_label.setPixmap(scaled_pixmap)
         else:
             self.scroll_area.setWidgetResizable(False)
-            scaled_pixmap = self.original_pixmap.scaled(
+            bounds = QSize(
                 int(self.original_pixmap.width() * self.scale_factor),
                 int(self.original_pixmap.height() * self.scale_factor),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
             )
+            scaled_pixmap = self._scaled_pixmap_for(bounds)
             self.image_label.setPixmap(scaled_pixmap)
             self.image_label.adjustSize()
+
+    def _scaled_pixmap_for(self, bounds: QSize) -> QPixmap:
+        """bounds に収まるよう（アスペクト比維持で）スケールした pixmap を返す。
+
+        SVG はベクターから表示サイズちょうどで都度ラスタライズするのでズームしても
+        鮮明なまま。それ以外は元 pixmap を平滑補間でスケールする。
+        """
+        if self.svg_renderer is not None:
+            return self._render_svg(self._aspect_fit_size(bounds))
+        return self.original_pixmap.scaled(
+            bounds.width(),
+            bounds.height(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _aspect_fit_size(self, bounds: QSize) -> QSize:
+        """original_pixmap のアスペクト比を保ったまま bounds に収まる最大サイズ。"""
+        w, h = self.original_pixmap.width(), self.original_pixmap.height()
+        if w <= 0 or h <= 0:
+            return bounds
+        scale = min(bounds.width() / w, bounds.height() / h)
+        return QSize(max(1, round(w * scale)), max(1, round(h * scale)))
+
+    def _render_svg(self, size: QSize) -> QPixmap:
+        """保持中の SVG を指定ピクセルサイズでラスタライズする。"""
+        image = QImage(size, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        self.svg_renderer.render(painter)
+        painter.end()
+        return QPixmap.fromImage(image)
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -929,6 +988,7 @@ class ImageViewer(QMainWindow):
         self.stop_movie()
         self.is_loading = False
         self.original_pixmap = QPixmap()
+        self.svg_renderer = None
         self.image_label.setText(WELCOME_TEXT)
         self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
         self.current_index = -1
