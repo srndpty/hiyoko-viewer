@@ -25,6 +25,10 @@ class ImageLoader(QObject):
         # QImageReader だと失敗理由（未対応フォーマット/破損/権限等）を errorString で残せる
         reader = QImageReader(file_path)
         reader.setAutoTransform(True)
+        # Qt6 はデフォルトで 256MB のメモリ割り当て上限があり、これを超える巨大画像
+        # （例: 9000x9000 の RGB ≈ 309MB）は読み込みに失敗する。ユーザーが明示的に
+        # 開いた信頼できるローカルファイルが対象なので、上限を解除して表示できるようにする。
+        reader.setAllocationLimit(0)
         image = reader.read()
         if image.isNull():
             logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())
