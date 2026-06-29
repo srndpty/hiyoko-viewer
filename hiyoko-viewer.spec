@@ -1,6 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
+# JPEG XL fallback でしか imagecodecs を使わないため、collect_submodules で全コーデックを
+# 取り込まず、JXL デコードに必要な拡張モジュールだけを hidden import として明示する。
+# 動的 import される C 拡張は PyInstaller が静的解析で検出できないため列挙が必要。
+imagecodecs_hiddenimports = [
+    'imagecodecs._jpegxl',
+    'imagecodecs._shared',
+]
 
 
 a = Analysis(
@@ -8,7 +14,7 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[('src/hiyoko_viewer/assets/app_icon.ico', '.')],
-    hiddenimports=collect_submodules('imagecodecs'),
+    hiddenimports=imagecodecs_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

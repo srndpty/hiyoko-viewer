@@ -5,19 +5,25 @@ from __future__ import annotations
 import logging
 import os
 from importlib import import_module
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QImageReader
+from PyQt6.QtGui import QColorSpace, QImage, QImageReader
 
 logger = logging.getLogger(__name__)
 
 
 def _load_jxl_with_imagecodecs(file_path: str) -> QImage:
-    """Qt の JPEG XL プラグインが無い環境向けに imagecodecs で読み込む。"""
+    """Qt の JPEG XL プラグインが無い環境向けに imagecodecs で読み込む。
+
+    用途は JPEG XL に限定されるため、汎用ディスパッチャ ``imread`` ではなく
+    JXL デコーダを直接呼ぶ。埋め込みプロファイルは引き継がず、sRGB 相当として
+    表示する（広色域 JXL では Qt 経由と色が変わり得る）。
+    """
     imagecodecs = import_module("imagecodecs")
     np = import_module("numpy")
 
-    array = imagecodecs.imread(file_path)
+    array = imagecodecs.jpegxl_decode(Path(file_path).read_bytes())
     if array is None:
         return QImage()
 
@@ -49,7 +55,9 @@ def _load_jxl_with_imagecodecs(file_path: str) -> QImage:
     contiguous = np.ascontiguousarray(array)
     height, width, _ = contiguous.shape
     bytes_per_line = contiguous.strides[0]
-    return QImage(contiguous.data, width, height, bytes_per_line, image_format).copy()
+    image = QImage(contiguous.data, width, height, bytes_per_line, image_format).copy()
+    image.setColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    return image
 
 
 def _as_uint8_array(array, np):
@@ -66,13 +74,15 @@ def _qimage_from_grayscale_array(array, np) -> QImage:
     contiguous = np.ascontiguousarray(array)
     height, width = contiguous.shape
     bytes_per_line = contiguous.strides[0]
-    return QImage(
+    image = QImage(
         contiguous.data,
         width,
         height,
         bytes_per_line,
         QImage.Format.Format_Grayscale8,
     ).copy()
+    image.setColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    return image
 
 
 class ImageLoader(QObject):
@@ -90,13 +100,18 @@ class ImageLoader(QObject):
         reader = QImageReader(file_path)
         reader.setAutoTransform(True)
         image = reader.read()
+
+        if image.isNull() and file_path.lower().endswith(".jxl"):
+            logger.debug("Qt failed to load JPEG XL, trying imagecodecs fallback: %s", file_path)
+            try:
+                image = _load_jxl_with_imagecodecs(file_path)
+            except Exception:
+                logger.exception("failed to load JPEG XL fallback: %s", file_path)
+
+        # fallback まで含めて読めなかった場合のみ警告する（成功時の誤検知を防ぐ）
         if image.isNull():
             logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())
-            if file_path.lower().endswith(".jxl"):
-                try:
-                    image = _load_jxl_with_imagecodecs(file_path)
-                except Exception:
-                    logger.exception("failed to load JPEG XL fallback: %s", file_path)
+
         self.image_loaded.emit(generation, file_path, image)
 
     @pyqtSlot(int, str, str)
