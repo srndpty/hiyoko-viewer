@@ -23,7 +23,10 @@ def _load_jxl_with_imagecodecs(file_path: str) -> QImage:
     imagecodecs = import_module("imagecodecs")
     np = import_module("numpy")
 
-    array = imagecodecs.jpegxl_decode(Path(file_path).read_bytes())
+    # JPEG XL は複数フレーム（アニメーション）を持てる。index 既定の None だと
+    # 全フレームを (frames, h, w, c) で返し後段の形状判定で失敗するため、
+    # 静止表示として先頭フレームのみを取得する。
+    array = imagecodecs.jpegxl_decode(Path(file_path).read_bytes(), index=0)
     if array is None:
         return QImage()
 

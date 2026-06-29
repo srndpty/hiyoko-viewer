@@ -90,8 +90,8 @@ def test_load_image_falls_back_to_imagecodecs_for_jpeg_xl(monkeypatch, tmp_path)
     )
     calls: list[bytes] = []
 
-    def fake_decode(data):
-        calls.append(data)
+    def fake_decode(data, index=None):
+        calls.append((data, index))
         return decoded
 
     monkeypatch.setitem(
@@ -113,8 +113,8 @@ def test_load_image_falls_back_to_imagecodecs_for_jpeg_xl(monkeypatch, tmp_path)
     assert not image.isNull()
     assert image.width() == 2
     assert image.height() == 2
-    # 拡張子で JXL と判定し、ファイルの生バイトをデコーダへ渡している
-    assert calls == [b"not a qt-readable image"]
+    # 拡張子で JXL と判定し、ファイルの生バイトと先頭フレーム指定を渡している
+    assert calls == [(b"not a qt-readable image", 0)]
 
 
 @pytest.mark.parametrize(
