@@ -4,11 +4,75 @@ from __future__ import annotations
 
 import logging
 import os
+from importlib import import_module
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QImage, QImageReader
 
 logger = logging.getLogger(__name__)
+
+
+def _load_jxl_with_imagecodecs(file_path: str) -> QImage:
+    """Qt の JPEG XL プラグインが無い環境向けに imagecodecs で読み込む。"""
+    imagecodecs = import_module("imagecodecs")
+    np = import_module("numpy")
+
+    array = imagecodecs.imread(file_path)
+    if array is None:
+        return QImage()
+
+    array = _as_uint8_array(array, np)
+
+    if array.ndim == 2:
+        return _qimage_from_grayscale_array(array, np)
+
+    if array.ndim != 3:
+        logger.warning("unsupported JPEG XL array shape: %s", array.shape)
+        return QImage()
+
+    channels = array.shape[2]
+    if channels == 1:
+        return _qimage_from_grayscale_array(array[:, :, 0], np)
+    if channels == 2:
+        gray = array[:, :, 0]
+        alpha = array[:, :, 1]
+        array = np.dstack((gray, gray, gray, alpha))
+        image_format = QImage.Format.Format_RGBA8888
+    elif channels == 3:
+        image_format = QImage.Format.Format_RGB888
+    elif channels == 4:
+        image_format = QImage.Format.Format_RGBA8888
+    else:
+        logger.warning("unsupported JPEG XL channel count: %s", channels)
+        return QImage()
+
+    contiguous = np.ascontiguousarray(array)
+    height, width, _ = contiguous.shape
+    bytes_per_line = contiguous.strides[0]
+    return QImage(contiguous.data, width, height, bytes_per_line, image_format).copy()
+
+
+def _as_uint8_array(array, np):
+    if array.dtype != np.uint8:
+        if array.dtype.kind == "f":
+            array = np.clip(array, 0.0, 1.0) * 255.0
+        elif array.dtype == np.uint16:
+            array = array / 257
+        array = np.clip(array, 0, 255).astype(np.uint8)
+    return array
+
+
+def _qimage_from_grayscale_array(array, np) -> QImage:
+    contiguous = np.ascontiguousarray(array)
+    height, width = contiguous.shape
+    bytes_per_line = contiguous.strides[0]
+    return QImage(
+        contiguous.data,
+        width,
+        height,
+        bytes_per_line,
+        QImage.Format.Format_Grayscale8,
+    ).copy()
 
 
 class ImageLoader(QObject):
@@ -28,6 +92,11 @@ class ImageLoader(QObject):
         image = reader.read()
         if image.isNull():
             logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())
+            if file_path.lower().endswith(".jxl"):
+                try:
+                    image = _load_jxl_with_imagecodecs(file_path)
+                except Exception:
+                    logger.exception("failed to load JPEG XL fallback: %s", file_path)
         self.image_loaded.emit(generation, file_path, image)
 
     @pyqtSlot(int, str, str)

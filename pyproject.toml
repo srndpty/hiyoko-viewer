@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
+    "imagecodecs>=2025.3.30",
+    "numpy>=2.0.0",
     "pillow>=11.3.0",
     "PyQt6>=6.9.1",
     "Send2Trash>=1.8.3",

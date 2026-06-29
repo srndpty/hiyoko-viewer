@@ -10,6 +10,7 @@ SUPPORTED_EXTENSIONS = [
     ".jfif",
     ".jpeg",
     ".jpg",
+    ".jxl",
     ".pbm",
     ".pgm",
     ".png",

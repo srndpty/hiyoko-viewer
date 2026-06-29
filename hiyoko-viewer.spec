@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules
+
 
 a = Analysis(
     ['main.py'],
     pathex=['src'],
     binaries=[],
     datas=[('src/hiyoko_viewer/assets/app_icon.ico', '.')],
-    hiddenimports=[],
+    hiddenimports=collect_submodules('imagecodecs'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
