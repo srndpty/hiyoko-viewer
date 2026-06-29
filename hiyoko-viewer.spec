@@ -1,11 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-# JPEG XL fallback でしか imagecodecs を使わないため、collect_submodules で全コーデックを
-# 取り込まず、JXL デコードに必要な拡張モジュールだけを hidden import として明示する。
-# 動的 import される C 拡張は PyInstaller が静的解析で検出できないため列挙が必要。
+# JPEG XL fallback でしか imagecodecs / numpy を使わないため、collect_submodules で全コーデックを
+# 取り込まず、JXL デコードに必要なモジュールだけを hidden import として明示する。
+# fallback の _load_jxl_with_imagecodecs() は import_module() で動的に読み込んでおり、
+# PyInstaller の静的解析では検出できないため列挙が必要（numpy も src 側に静的 import が無い）。
 imagecodecs_hiddenimports = [
     'imagecodecs._jpegxl',
     'imagecodecs._shared',
+    'numpy',
 ]
 
 
