@@ -4,11 +4,96 @@ from __future__ import annotations
 
 import logging
 import os
+from importlib import import_module
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QImageReader
+from PyQt6.QtGui import QColorSpace, QImage, QImageReader
 
 logger = logging.getLogger(__name__)
+
+
+def _load_jxl_with_imagecodecs(file_path: str) -> QImage:
+    """Qt の JPEG XL プラグインが無い環境向けに imagecodecs で読み込む。
+
+    用途は JPEG XL に限定されるため、汎用ディスパッチャ ``imread`` ではなく
+    JXL デコーダを直接呼ぶ。埋め込みプロファイルは引き継がず、sRGB 相当として
+    表示する（広色域 JXL では Qt 経由と色が変わり得る）。
+    """
+    imagecodecs = import_module("imagecodecs")
+    np = import_module("numpy")
+
+    # JPEG XL は複数フレーム（アニメーション）を持てる。index 既定の None だと
+    # 全フレームを (frames, h, w, c) で返し後段の形状判定で失敗するため、
+    # 静止表示として先頭フレームのみを取得する。
+    array = imagecodecs.jpegxl_decode(Path(file_path).read_bytes(), index=0)
+    if array is None:
+        return QImage()
+
+    array = _as_uint8_array(array, np)
+
+    if array.ndim == 2:
+        return _qimage_from_grayscale_array(array, np)
+
+    if array.ndim != 3:
+        logger.warning("unsupported JPEG XL array shape: %s", array.shape)
+        return QImage()
+
+    channels = array.shape[2]
+    if channels == 1:
+        return _qimage_from_grayscale_array(array[:, :, 0], np)
+    if channels == 2:
+        gray = array[:, :, 0]
+        alpha = array[:, :, 1]
+        array = np.dstack((gray, gray, gray, alpha))
+        image_format = QImage.Format.Format_RGBA8888
+    elif channels == 3:
+        image_format = QImage.Format.Format_RGB888
+    elif channels == 4:
+        image_format = QImage.Format.Format_RGBA8888
+    else:
+        logger.warning("unsupported JPEG XL channel count: %s", channels)
+        return QImage()
+
+    contiguous = np.ascontiguousarray(array)
+    height, width, _ = contiguous.shape
+    bytes_per_line = contiguous.strides[0]
+    image = QImage(contiguous.data, width, height, bytes_per_line, image_format).copy()
+    image.setColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    return image
+
+
+def _as_uint8_array(array, np):
+    if array.dtype == np.uint8:
+        return array
+    if array.dtype.kind == "f":
+        array = np.clip(array, 0.0, 1.0) * 255.0
+    elif array.dtype == np.uint16:
+        # imagecodecs は 9〜16bit の JPEG XL を 16bit フルレンジへ正規化せず、
+        # native ビット深度のレンジ（例: 10bit→0..1023）の uint16 で返す。
+        # そのため /257 固定では 10/12bit が極端に暗くなる。実データの最大値から
+        # ビット深度を推定し、そのフルスケールで 8bit へスケールする。
+        max_value = int(array.max()) if array.size else 0
+        bit_depth = min(16, max(8, max_value.bit_length()))
+        full_scale = (1 << bit_depth) - 1
+        array = array.astype(np.float64) * (255.0 / full_scale)
+    array = np.clip(array, 0, 255).astype(np.uint8)
+    return array
+
+
+def _qimage_from_grayscale_array(array, np) -> QImage:
+    contiguous = np.ascontiguousarray(array)
+    height, width = contiguous.shape
+    bytes_per_line = contiguous.strides[0]
+    image = QImage(
+        contiguous.data,
+        width,
+        height,
+        bytes_per_line,
+        QImage.Format.Format_Grayscale8,
+    ).copy()
+    image.setColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    return image
 
 
 class ImageLoader(QObject):
@@ -26,8 +111,18 @@ class ImageLoader(QObject):
         reader = QImageReader(file_path)
         reader.setAutoTransform(True)
         image = reader.read()
+
+        if image.isNull() and file_path.lower().endswith(".jxl"):
+            logger.debug("Qt failed to load JPEG XL, trying imagecodecs fallback: %s", file_path)
+            try:
+                image = _load_jxl_with_imagecodecs(file_path)
+            except Exception:
+                logger.exception("failed to load JPEG XL fallback: %s", file_path)
+
+        # fallback まで含めて読めなかった場合のみ警告する（成功時の誤検知を防ぐ）
         if image.isNull():
             logger.warning("failed to load image: %s error=%s", file_path, reader.errorString())
+
         self.image_loaded.emit(generation, file_path, image)
 
     @pyqtSlot(int, str, str)

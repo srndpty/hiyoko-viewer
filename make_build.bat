@@ -1,1 +1,2 @@
-pyinstaller --name hiyoko-viewer --noconfirm --noupx --windowed --paths src --add-data "src/hiyoko_viewer/assets/app_icon.ico;." --icon=src/hiyoko_viewer/assets/app_icon.ico main.py
+rem ビルド設定は hiyoko-viewer.spec に集約する（JXL fallback 用の hidden import を含む）。
+pyinstaller --noconfirm hiyoko-viewer.spec

@@ -1,6 +1,7 @@
 param(
     [switch]$SkipPreCommit,
-    [switch]$CheckStaged
+    [switch]$CheckStaged,
+    [switch]$Fix
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,12 +28,24 @@ if (-not (Test-Path $python)) {
     $python = "python"
 }
 
-Invoke-Step "ruff check" {
-    & $python -m ruff check .
-}
+if ($Fix) {
+    # -Fix: ローカル向けに自動修正する（CI では未指定で --check 検証のままにする）
+    Invoke-Step "ruff check --fix" {
+        & $python -m ruff check --fix .
+    }
 
-Invoke-Step "ruff format --check" {
-    & $python -m ruff format --check .
+    Invoke-Step "ruff format" {
+        & $python -m ruff format .
+    }
+}
+else {
+    Invoke-Step "ruff check" {
+        & $python -m ruff check .
+    }
+
+    Invoke-Step "ruff format --check" {
+        & $python -m ruff format --check .
+    }
 }
 
 Invoke-Step "pytest" {
