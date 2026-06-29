@@ -18,6 +18,24 @@ def _require_jpegxl():
     return imagecodecs
 
 
+class _NullReader:
+    """Qt に JXL プラグインがある環境でも必ず fallback を通すための失敗スタブ。"""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def setAutoTransform(self, *args, **kwargs) -> None:
+        pass
+
+    def read(self):
+        from PyQt6.QtGui import QImage
+
+        return QImage()
+
+    def errorString(self) -> str:
+        return "forced failure"
+
+
 def test_supported_extensions_include_jpeg_xl() -> None:
     assert ".jxl" in SUPPORTED_EXTENSIONS
 
@@ -153,22 +171,6 @@ def test_load_image_decodes_real_jpeg_xl(monkeypatch, tmp_path, make_array, samp
     image_path = tmp_path / "real.jxl"
     image_path.write_bytes(imagecodecs.jpegxl_encode(array, lossless=True))
 
-    # Qt 側に JXL プラグインがある環境でも必ず fallback を通すため、reader を失敗させる。
-    class _NullReader:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def setAutoTransform(self, *args, **kwargs) -> None:
-            pass
-
-        def read(self):
-            from PyQt6.QtGui import QImage
-
-            return QImage()
-
-        def errorString(self) -> str:
-            return "forced failure"
-
     monkeypatch.setattr(image_loader, "QImageReader", _NullReader)
 
     emitted = []
@@ -194,21 +196,6 @@ def test_load_image_warns_only_when_fallback_also_fails(monkeypatch, tmp_path, c
     image_path = tmp_path / "ok.jxl"
     image_path.write_bytes(imagecodecs.jpegxl_encode(array, lossless=True))
 
-    class _NullReader:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def setAutoTransform(self, *args, **kwargs) -> None:
-            pass
-
-        def read(self):
-            from PyQt6.QtGui import QImage
-
-            return QImage()
-
-        def errorString(self) -> str:
-            return "forced failure"
-
     monkeypatch.setattr(image_loader, "QImageReader", _NullReader)
 
     loader = ImageLoader()
@@ -216,3 +203,31 @@ def test_load_image_warns_only_when_fallback_also_fails(monkeypatch, tmp_path, c
         loader.load_image(6, str(image_path))
 
     assert "failed to load image" not in caplog.text
+
+
+@pytest.mark.parametrize("bit_depth", [10, 12, 16], ids=["10bit", "12bit", "16bit"])
+def test_load_image_scales_high_bit_depth_jpeg_xl(monkeypatch, tmp_path, bit_depth) -> None:
+    """10/12/16bit JXL の白が暗く潰れず ~255 にスケールされることを確認する。"""
+    imagecodecs = _require_jpegxl()
+    max_value = (1 << bit_depth) - 1
+    array = np.array(
+        [[[0, 0, 0], [max_value, max_value, max_value]]],
+        dtype=np.uint16,
+    )
+    image_path = tmp_path / "deep.jxl"
+    image_path.write_bytes(imagecodecs.jpegxl_encode(array, lossless=True, bitspersample=bit_depth))
+
+    monkeypatch.setattr(image_loader, "QImageReader", _NullReader)
+
+    emitted = []
+    loader = ImageLoader()
+    loader.image_loaded.connect(lambda gen, path, image: emitted.append((gen, path, image)))
+
+    loader.load_image(7, str(image_path))
+
+    assert len(emitted) == 1
+    _gen, _path, image = emitted[0]
+    assert not image.isNull()
+    # 黒は黒、白はフルスケール（/257 固定だと 10/12bit でほぼ黒になっていた）
+    assert image.pixelColor(0, 0).getRgb() == (0, 0, 0, 255)
+    assert image.pixelColor(1, 0).getRgb() == (255, 255, 255, 255)

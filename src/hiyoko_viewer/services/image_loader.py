@@ -64,12 +64,20 @@ def _load_jxl_with_imagecodecs(file_path: str) -> QImage:
 
 
 def _as_uint8_array(array, np):
-    if array.dtype != np.uint8:
-        if array.dtype.kind == "f":
-            array = np.clip(array, 0.0, 1.0) * 255.0
-        elif array.dtype == np.uint16:
-            array = array / 257
-        array = np.clip(array, 0, 255).astype(np.uint8)
+    if array.dtype == np.uint8:
+        return array
+    if array.dtype.kind == "f":
+        array = np.clip(array, 0.0, 1.0) * 255.0
+    elif array.dtype == np.uint16:
+        # imagecodecs は 9〜16bit の JPEG XL を 16bit フルレンジへ正規化せず、
+        # native ビット深度のレンジ（例: 10bit→0..1023）の uint16 で返す。
+        # そのため /257 固定では 10/12bit が極端に暗くなる。実データの最大値から
+        # ビット深度を推定し、そのフルスケールで 8bit へスケールする。
+        max_value = int(array.max()) if array.size else 0
+        bit_depth = min(16, max(8, max_value.bit_length()))
+        full_scale = (1 << bit_depth) - 1
+        array = array.astype(np.float64) * (255.0 / full_scale)
+    array = np.clip(array, 0, 255).astype(np.uint8)
     return array
 
 
