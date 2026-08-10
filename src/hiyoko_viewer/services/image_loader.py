@@ -7,8 +7,8 @@ import os
 from importlib import import_module
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColorSpace, QImage, QImageReader
+from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColorSpace, QImage, QImageReader, QImageWriter
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +101,45 @@ class ImageLoader(QObject):
     # QPixmap への変換は受信側（GUI スレッド）の update_image_display で行う。
     image_loaded = pyqtSignal(int, str, QImage)  # (generation, file_path, image)
     list_loaded = pyqtSignal(int, list, int)  # (generation, file_list, initial_index)
+    warmup_finished = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
+
+    @pyqtSlot()
+    def warmup(self) -> None:
+        """起動直後に画像コーデックの初回ロードコストを前倒しする。
+
+        配布版（PyInstaller）を他マシンで初回起動すると、Qt の画像フォーマット
+        プラグイン DLL 群が初回アクセス時にまとめてロード（＋アンチウイルスの
+        スキャン）され、最初の 1 枚だけ数秒待たされる。ここで代表フォーマットを
+        worker スレッド上で 1 回デコードしておくことで、そのコストをウィンドウ
+        起動の裏に隠し、ユーザーの最初の読み込みを速く感じさせる。
+        """
+        try:
+            # まず全画像フォーマットプラグインの列挙を促す（DLL 探索の前倒し）。
+            QImageReader.supportedImageFormats()
+            # 代表フォーマットを実際に write/read して、各コーデックを初期化する。
+            sample = QImage(8, 8, QImage.Format.Format_RGB32)
+            sample.fill(0)
+            for fmt in (b"png", b"jpeg", b"bmp", b"gif", b"webp"):
+                data = QByteArray()
+                write_buffer = QBuffer(data)
+                write_buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                writer = QImageWriter(write_buffer, fmt)
+                wrote = writer.write(sample)
+                write_buffer.close()
+                if not wrote:
+                    continue
+                read_buffer = QBuffer(data)
+                read_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+                QImageReader(read_buffer, fmt).read()
+                read_buffer.close()
+        except Exception:
+            # warmup はあくまで最適化なので、失敗しても本処理には影響させない。
+            logger.exception("image codec warmup failed")
+        finally:
+            self.warmup_finished.emit()
 
     @pyqtSlot(int, str)
     def load_image(self, generation: int, file_path: str) -> None:

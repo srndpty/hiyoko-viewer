@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow):
     request_load_image = pyqtSignal(int, str)  # (generation, path)
     request_load_list = pyqtSignal(int, str, str)  # (generation, directory, path)
+    request_warmup = pyqtSignal()  # 起動時のコーデック warmup 依頼
 
     # --- インスタンス変数の型宣言 (Python 3.6+) ---
     fit_to_window: bool
@@ -156,6 +157,11 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.request_load_list.connect(self.image_loader.load_file_list)
 
         self.worker_thread.start()
+
+        # スレッド起動後、最初のユーザー操作を待たずに画像コーデックを暖機する。
+        # （worker スレッド上で走るので GUI/起動表示はブロックしない）
+        self.request_warmup.connect(self.image_loader.warmup)
+        self.request_warmup.emit()
 
     # --------------------------------------------------------------------------
     # システムトレイ
