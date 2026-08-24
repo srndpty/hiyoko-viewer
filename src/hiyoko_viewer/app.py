@@ -122,10 +122,20 @@ def _forward_to_running_instance(socket_factory: Callable[[], QLocalSocket] = QL
             socket.abort()
             continue
 
-        if not socket.waitForBytesWritten(IPC_CONNECT_TIMEOUT_MS):
+        # waitForBytesWritten() は「バッファの一部が書けた」時点で True になるため、
+        # 1回では payload 全体の送信完了を保証しない。bytesToWrite() が 0 になるまで待つ。
+        if not _flush_socket(socket, attempt):
+            socket.abort()
+            continue
+
+        # 受信側は disconnected を1メッセージの区切りとして扱うので、明示的に切断し、
+        # 切断が完了する（＝相手が受け取り切る）ところまで見届けてから成功にする
+        socket.disconnectFromServer()
+        if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState and (
+            not socket.waitForDisconnected(IPC_CONNECT_TIMEOUT_MS)
+        ):
             logger.warning(
-                "IPC payload was not flushed within %s ms (attempt %s/%s): %s",
-                IPC_CONNECT_TIMEOUT_MS,
+                "IPC disconnect did not complete (attempt %s/%s): %s",
                 attempt,
                 IPC_CONNECT_ATTEMPTS,
                 socket.errorString(),
@@ -134,11 +144,25 @@ def _forward_to_running_instance(socket_factory: Callable[[], QLocalSocket] = QL
             continue
 
         logger.info("forwarded %s bytes to the running instance", written)
-        # 受信側は disconnected を区切りとして扱うので、明示的に切断する
-        socket.disconnectFromServer()
         return True
 
     return False
+
+
+def _flush_socket(socket: QLocalSocket, attempt: int) -> bool:
+    """未送信バイトが無くなるまで待つ。書き切れなければ False。"""
+    while socket.bytesToWrite() > 0:
+        if not socket.waitForBytesWritten(IPC_CONNECT_TIMEOUT_MS):
+            logger.warning(
+                "IPC payload was not flushed within %s ms (attempt %s/%s): %s bytes left: %s",
+                IPC_CONNECT_TIMEOUT_MS,
+                attempt,
+                IPC_CONNECT_ATTEMPTS,
+                socket.bytesToWrite(),
+                socket.errorString(),
+            )
+            return False
+    return True
 
 
 def make_forwarded_message_handler(viewer: ImageViewer) -> Callable[[bytes], None]:
@@ -166,15 +190,21 @@ def attach_forward_receiver(socket: QLocalSocket, on_message: Callable[[bytes], 
     chunks = bytearray()
     finished = False
 
+    def drain() -> None:
+        if socket.bytesAvailable():
+            chunks.extend(bytes(socket.readAll().data()))
+
     def finish() -> None:
         nonlocal finished
         if finished:
             return
         finished = True
+        # readyRead を経ずに disconnected / タイムアウトへ来る順序でも取りこぼさない
+        drain()
         on_message(bytes(chunks))
         socket.deleteLater()
 
-    socket.readyRead.connect(lambda: chunks.extend(bytes(socket.readAll().data())))
+    socket.readyRead.connect(drain)
     socket.disconnected.connect(finish)
     QTimer.singleShot(IPC_RECEIVE_TIMEOUT_MS, finish)
 
@@ -198,20 +228,28 @@ def _acquire_instance_lock(shared_memory: QSharedMemory) -> str:
     return LOCK_UNAVAILABLE
 
 
-def _notify_unreachable_instance() -> None:
-    """既存インスタンスに届かなかったことをユーザーに伝える。
+def _notify(message: str) -> None:
+    """起動を諦めた理由をユーザーに見せる。
 
-    ここで無言終了すると「起動しても無反応＝フリーズ」に見える。かといって
-    duplicate window を出すと QSettings の同時書き込み・トレイ二重化・IPC サーバの
-    所有権など別の競合を生むため、single-instance は崩さずに状況だけ提示する。
+    無言終了すると「起動しても無反応＝フリーズ」に見えるため、必ず理由を出す。
+    かといってロック無しで通常起動すると、Windows では同じ pipe 名で 2 つの
+    QLocalServer が listen できてしまい（どちらに配送されるか不定）、さらに
+    QSettings の同時書き込み・トレイ二重化など別の競合も生む。よって
+    single-instance を崩さない fail-closed とし、状況だけ提示する。
     """
-    QMessageBox.warning(
-        None,
-        "ひよこビューア",
-        "ひよこビューアはすでに起動していますが、応答しません。\n"
-        "タスクマネージャーで hiyoko-viewer.exe を終了してから、"
-        "もう一度起動してください。",
-    )
+    QMessageBox.warning(None, "ひよこビューア", message)
+
+
+UNREACHABLE_INSTANCE_MESSAGE = (
+    "ひよこビューアはすでに起動していますが、応答しません。\n"
+    "タスクマネージャーで hiyoko-viewer.exe を終了してから、もう一度起動してください。"
+)
+
+LOCK_UNAVAILABLE_MESSAGE = (
+    "ひよこビューアの二重起動チェックに失敗したため、起動を中止しました。\n"
+    "しばらく待つか、サインインし直してからもう一度起動してください。\n"
+    "詳細は %LOCALAPPDATA%\\HiyokoViewer\\logs\\hiyoko-viewer.log を参照してください。"
+)
 
 
 def main() -> int:
@@ -238,11 +276,14 @@ def main() -> int:
             # このインスタンスは役目を終えたので終了
             return 0
         logger.error("the running instance did not accept the request; giving up")
-        _notify_unreachable_instance()
+        _notify(UNREACHABLE_INSTANCE_MESSAGE)
         return 1
     if lock_state == LOCK_UNAVAILABLE:
-        # 二重起動を判定できないが、起動できない方が困るので単独起動として続行する
-        logger.warning("continuing without the single-instance lock")
+        # 二重起動を判定できない状態で通常起動すると、既存インスタンスと IPC サーバ・
+        # 設定・トレイを奪い合う。起動しない方を選ぶ（fail-closed）
+        logger.error("could not take the single-instance lock; aborting startup")
+        _notify(LOCK_UNAVAILABLE_MESSAGE)
+        return 1
 
     # --- ここから下は、最初のインスタンスのみが実行する ---
     # app.setPalette() よりも強力なスタイルシートで、デフォルトのウィンドウ背景を上書きする

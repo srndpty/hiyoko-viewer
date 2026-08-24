@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from PyQt6.QtCore import QSharedMemory
+from PyQt6.QtNetwork import QLocalSocket
 
 from hiyoko_viewer import app as app_module
 
@@ -98,6 +99,9 @@ class _FakeServerSocket:
         self.disconnected = _Signal()
         self.deleted = 0
 
+    def bytesAvailable(self) -> int:
+        return sum(len(chunk) for chunk in self._chunks)
+
     def readAll(self):
         return SimpleNamespace(data=lambda: self._chunks.pop(0))
 
@@ -105,13 +109,18 @@ class _FakeServerSocket:
         self.deleted += 1
 
 
-def test_attach_forward_receiver_assembles_chunks_on_disconnect(monkeypatch) -> None:
+def _single_shot_recorder(monkeypatch) -> list:
     timers: list = []
     monkeypatch.setattr(
         app_module,
         "QTimer",
         SimpleNamespace(singleShot=lambda _ms, slot: timers.append(slot)),
     )
+    return timers
+
+
+def test_attach_forward_receiver_assembles_chunks_on_disconnect(monkeypatch) -> None:
+    timers = _single_shot_recorder(monkeypatch)
     socket = _FakeServerSocket([b'{"args": ', b'["a.png"]}'])
     received: list[bytes] = []
 
@@ -128,12 +137,7 @@ def test_attach_forward_receiver_assembles_chunks_on_disconnect(monkeypatch) -> 
 
 
 def test_attach_forward_receiver_falls_back_to_timeout(monkeypatch) -> None:
-    timers: list = []
-    monkeypatch.setattr(
-        app_module,
-        "QTimer",
-        SimpleNamespace(singleShot=lambda _ms, slot: timers.append(slot)),
-    )
+    timers = _single_shot_recorder(monkeypatch)
     socket = _FakeServerSocket([b"partial"])
     received: list[bytes] = []
 
@@ -145,16 +149,59 @@ def test_attach_forward_receiver_falls_back_to_timeout(monkeypatch) -> None:
     assert received == [b"partial"]
 
 
+def test_attach_forward_receiver_drains_unread_bytes_on_disconnect(monkeypatch) -> None:
+    # readyRead を経ずに disconnected が来る順序でも payload を取りこぼさない
+    _single_shot_recorder(monkeypatch)
+    socket = _FakeServerSocket([b'{"args": ["a.png"]}'])
+    received: list[bytes] = []
+
+    app_module.attach_forward_receiver(socket, received.append)
+    socket.disconnected.emit()
+
+    assert received == [b'{"args": ["a.png"]}']
+
+
+def test_attach_forward_receiver_drains_remaining_bytes_on_timeout(monkeypatch) -> None:
+    timers = _single_shot_recorder(monkeypatch)
+    socket = _FakeServerSocket([b'{"args": ', b'["a.png"]}'])
+    received: list[bytes] = []
+
+    app_module.attach_forward_receiver(socket, received.append)
+    socket.readyRead.emit()  # 先頭だけ読めた状態でタイムアウトに入る
+    timers[0]()
+
+    assert received == [b'{"args": ["a.png"]}']
+
+
 # --------------------------------------------------------------------------
 # 送信側: 書き込み完了まで確認してから True を返す
 # --------------------------------------------------------------------------
 class _FakeClientSocket:
-    def __init__(self, *, connected=True, written=None, flushed=True) -> None:
+    """QLocalSocket の送信側の振る舞いを再現する。
+
+    ``waitForBytesWritten()`` は「バッファの一部が書けた」時点で True になり得るので、
+    ``flush_chunk`` で小分けに書き出される状況を再現できるようにしている。
+    """
+
+    def __init__(
+        self,
+        *,
+        connected=True,
+        written=None,
+        flushed=True,
+        flush_chunk=None,
+        disconnect_completes=True,
+    ) -> None:
         self._connected = connected
         self._written = written
         self._flushed = flushed
+        self._flush_chunk = flush_chunk
+        self._disconnect_completes = disconnect_completes
+        self._pending = 0
+        self._disconnect_requested = False
         self.payload = b""
         self.aborted = 0
+        self.flush_waits = 0
         self.disconnected_count = 0
 
     def connectToServer(self, name: str) -> None:
@@ -165,15 +212,36 @@ class _FakeClientSocket:
 
     def write(self, data: bytes) -> int:
         self.payload = data
-        return len(data) if self._written is None else self._written
+        accepted = len(data) if self._written is None else self._written
+        self._pending = accepted
+        return accepted
+
+    def bytesToWrite(self) -> int:
+        return self._pending
 
     def waitForBytesWritten(self, _timeout: int) -> bool:
-        return self._flushed
+        self.flush_waits += 1
+        if not self._flushed:
+            return False
+        self._pending -= self._flush_chunk or self._pending
+        self._pending = max(0, self._pending)
+        return True
+
+    def state(self):
+        if self._disconnect_requested and self._disconnect_completes:
+            return QLocalSocket.LocalSocketState.UnconnectedState
+        if self._disconnect_requested:
+            return QLocalSocket.LocalSocketState.ClosingState
+        return QLocalSocket.LocalSocketState.ConnectedState
+
+    def waitForDisconnected(self, _timeout: int) -> bool:
+        return self._disconnect_completes
 
     def abort(self) -> None:
         self.aborted += 1
 
     def disconnectFromServer(self) -> None:
+        self._disconnect_requested = True
         self.disconnected_count += 1
 
     def errorString(self) -> str:
@@ -200,12 +268,49 @@ def test_forward_returns_false_on_partial_write(monkeypatch) -> None:
     assert all(s.aborted == 1 for s in sockets)
 
 
+def test_forward_waits_until_all_bytes_are_written(monkeypatch) -> None:
+    # waitForBytesWritten() 1回では書き切れない（5バイトずつ捌ける）状況
+    socket = _FakeClientSocket(flush_chunk=5)
+
+    assert _forward_with([socket], monkeypatch) is True
+    assert socket.bytesToWrite() == 0
+    # payload は 12 バイト（{"args": []}）なので 3 回待つ必要がある
+    assert socket.flush_waits == 3
+    assert socket.disconnected_count == 1
+
+
 def test_forward_returns_false_when_flush_times_out(monkeypatch) -> None:
     sockets = [_FakeClientSocket(flushed=False) for _ in range(app_module.IPC_CONNECT_ATTEMPTS)]
 
     assert _forward_with(list(sockets), monkeypatch) is False
     assert all(s.aborted == 1 for s in sockets)
     assert all(s.disconnected_count == 0 for s in sockets)
+
+
+def test_forward_returns_false_when_flush_stalls_midway(monkeypatch) -> None:
+    # 一部だけ書けた後に停止するケース（成功扱いにしてはいけない）
+    class _StallingSocket(_FakeClientSocket):
+        def waitForBytesWritten(self, timeout: int) -> bool:
+            if self.flush_waits >= 1:
+                self.flush_waits += 1
+                return False
+            return super().waitForBytesWritten(timeout)
+
+    sockets = [_StallingSocket(flush_chunk=5) for _ in range(app_module.IPC_CONNECT_ATTEMPTS)]
+
+    assert _forward_with(list(sockets), monkeypatch) is False
+    assert all(s.bytesToWrite() > 0 for s in sockets)
+    assert all(s.aborted == 1 for s in sockets)
+
+
+def test_forward_returns_false_when_disconnect_does_not_complete(monkeypatch) -> None:
+    sockets = [
+        _FakeClientSocket(disconnect_completes=False)
+        for _ in range(app_module.IPC_CONNECT_ATTEMPTS)
+    ]
+
+    assert _forward_with(list(sockets), monkeypatch) is False
+    assert all(s.aborted == 1 for s in sockets)
 
 
 def test_forward_retries_connection_then_succeeds(monkeypatch) -> None:
