@@ -195,6 +195,10 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         # --- 左クリックのアクションを接続 ---
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
 
+        # ログオン直後は explorer.exe が未準備でトレイ登録に失敗しうる（Qt は
+        # TaskbarCreated で再登録するが、失敗した事実は追えるよう残す）
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("system tray is not available at startup")
         self.tray_icon.show()
 
     def on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -271,6 +275,21 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             geometry = settings.value("main_window/geometry")
             if geometry:
                 self.restoreGeometry(geometry)
+                self._ensure_on_screen()
+
+    def _ensure_on_screen(self) -> None:
+        """復元したジオメトリが利用可能な画面外なら、既定位置に戻す。
+
+        ログオン直後（shell:startup 起動）はモニタ構成が確定していないことがあり、
+        前回終了時の座標が画面外になると「起動したのに何も表示されない＝フリーズ」
+        に見えてしまう。トレイ常駐アプリなので気付く手段も乏しく、致命的になる。
+        """
+        frame = self.frameGeometry()
+        for screen in QApplication.screens():
+            if screen.availableGeometry().intersects(frame):
+                return
+        logger.warning("restored geometry %s is off-screen; falling back to default", frame)
+        self.setGeometry(100, 100, 800, 600)
 
     def _save_settings(self) -> None:
         """現在のウィンドウの状態をアプリケーションの設定として保存する"""

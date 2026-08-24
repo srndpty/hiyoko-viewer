@@ -1280,10 +1280,52 @@ def test_load_settings_restores_saved_geometry(monkeypatch) -> None:
     viewer = SimpleNamespace()
     viewer.showMaximized = lambda: (_ for _ in ()).throw(AssertionError)
     viewer.restoreGeometry = calls.append
+    viewer._ensure_on_screen = lambda: calls.append("ensure")
 
     ImageViewer._load_settings(viewer)
 
-    assert calls == [b"geometry"]
+    assert calls == [b"geometry", "ensure"]
+
+
+def test_ensure_on_screen_keeps_geometry_when_visible(monkeypatch) -> None:
+    class _Screen:
+        def __init__(self, rect):
+            self._rect = rect
+
+        def availableGeometry(self):
+            return self._rect
+
+    class _Rect:
+        def __init__(self, hit):
+            self._hit = hit
+
+        def intersects(self, _other):
+            return self._hit
+
+    monkeypatch.setattr(
+        main_window.QApplication, "screens", staticmethod(lambda: [_Screen(_Rect(True))])
+    )
+    viewer = SimpleNamespace()
+    viewer.frameGeometry = lambda: object()
+    viewer.setGeometry = lambda *_: (_ for _ in ()).throw(AssertionError)
+
+    ImageViewer._ensure_on_screen(viewer)
+
+
+def test_ensure_on_screen_falls_back_when_off_screen(monkeypatch) -> None:
+    class _Screen:
+        def availableGeometry(self):
+            return SimpleNamespace(intersects=lambda _other: False)
+
+    monkeypatch.setattr(main_window.QApplication, "screens", staticmethod(lambda: [_Screen()]))
+    calls: list[tuple[int, int, int, int]] = []
+    viewer = SimpleNamespace()
+    viewer.frameGeometry = lambda: object()
+    viewer.setGeometry = lambda *args: calls.append(args)
+
+    ImageViewer._ensure_on_screen(viewer)
+
+    assert calls == [(100, 100, 800, 600)]
 
 
 def test_save_settings_leaves_fullscreen_and_writes_geometry(monkeypatch) -> None:
