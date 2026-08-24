@@ -48,6 +48,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ウィンドウが「掴める」とみなす最小の可視サイズ（タイトルバー相当）
+MIN_VISIBLE_WIDTH = 120
+MIN_VISIBLE_HEIGHT = 30
+
 
 class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow):
     request_load_image = pyqtSignal(int, str)  # (generation, path)
@@ -195,6 +199,10 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         # --- 左クリックのアクションを接続 ---
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
 
+        # ログオン直後は explorer.exe が未準備でトレイ登録に失敗しうる（Qt は
+        # TaskbarCreated で再登録するが、失敗した事実は追えるよう残す）
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("system tray is not available at startup")
         self.tray_icon.show()
 
     def on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -270,7 +278,26 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             # 返すことがあるため、型ではなく中身の有無で判定する
             geometry = settings.value("main_window/geometry")
             if geometry:
-                self.restoreGeometry(geometry)
+                restored = self.restoreGeometry(geometry)
+                logger.info("restoreGeometry returned %s -> %s", restored, self.geometry())
+                self._ensure_on_screen()
+
+    def _ensure_on_screen(self) -> None:
+        """復元したジオメトリが実質的に画面外なら、既定位置に戻す（多重防御）。
+
+        ``restoreGeometry()`` 自体が利用可能な画面内へ補正する仕様なので通常は不要。
+        ただしトレイ常駐アプリでウィンドウが掴めない状態になると「起動したのに何も
+        出ない」となり復帰手段に乏しいため、補正をすり抜けた異常なジオメトリを
+        最後に弾いておく。
+        """
+        frame = self.frameGeometry()
+        for screen in QApplication.screens():
+            visible = screen.availableGeometry().intersected(frame)
+            # 数 px だけ掛かっている状態は掴めないので「見えている」とみなさない
+            if visible.width() >= MIN_VISIBLE_WIDTH and visible.height() >= MIN_VISIBLE_HEIGHT:
+                return
+        logger.warning("restored geometry %s is not usable; falling back to default", frame)
+        self.setGeometry(100, 100, 800, 600)
 
     def _save_settings(self) -> None:
         """現在のウィンドウの状態をアプリケーションの設定として保存する"""

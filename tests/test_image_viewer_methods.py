@@ -2,7 +2,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QRect, Qt
 from PyQt6.QtGui import QMovie
 
 from hiyoko_viewer.config import constants
@@ -1279,11 +1279,61 @@ def test_load_settings_restores_saved_geometry(monkeypatch) -> None:
     monkeypatch.setattr(main_window, "QSettings", _Settings)
     viewer = SimpleNamespace()
     viewer.showMaximized = lambda: (_ for _ in ()).throw(AssertionError)
-    viewer.restoreGeometry = calls.append
+    viewer.restoreGeometry = lambda value: calls.append(value) or True
+    viewer.geometry = lambda: QRect(0, 0, 800, 600)
+    viewer._ensure_on_screen = lambda: calls.append("ensure")
 
     ImageViewer._load_settings(viewer)
 
-    assert calls == [b"geometry"]
+    assert calls == [b"geometry", "ensure"]
+
+
+def _screens_returning(*rects: QRect):
+    return staticmethod(
+        lambda: [SimpleNamespace(availableGeometry=lambda rect=rect: rect) for rect in rects]
+    )
+
+
+def _ensure_on_screen_with(monkeypatch, frame: QRect, *screens: QRect) -> list:
+    monkeypatch.setattr(main_window.QApplication, "screens", _screens_returning(*screens))
+    calls: list = []
+    viewer = SimpleNamespace()
+    viewer.frameGeometry = lambda: frame
+    viewer.setGeometry = lambda *args: calls.append(args)
+    ImageViewer._ensure_on_screen(viewer)
+    return calls
+
+
+def test_ensure_on_screen_keeps_geometry_when_visible(monkeypatch) -> None:
+    calls = _ensure_on_screen_with(monkeypatch, QRect(100, 100, 800, 600), QRect(0, 0, 1920, 1080))
+
+    assert calls == []
+
+
+def test_ensure_on_screen_keeps_geometry_on_a_secondary_screen(monkeypatch) -> None:
+    calls = _ensure_on_screen_with(
+        monkeypatch,
+        QRect(2000, 100, 800, 600),
+        QRect(0, 0, 1920, 1080),
+        QRect(1920, 0, 1920, 1080),
+    )
+
+    assert calls == []
+
+
+def test_ensure_on_screen_falls_back_when_off_screen(monkeypatch) -> None:
+    calls = _ensure_on_screen_with(
+        monkeypatch, QRect(5000, 5000, 800, 600), QRect(0, 0, 1920, 1080)
+    )
+
+    assert calls == [(100, 100, 800, 600)]
+
+
+def test_ensure_on_screen_falls_back_when_barely_overlapping(monkeypatch) -> None:
+    # 右端に数 px 掛かっているだけの状態はユーザーが掴めないので画面外扱いにする
+    calls = _ensure_on_screen_with(monkeypatch, QRect(1917, 100, 800, 600), QRect(0, 0, 1920, 1080))
+
+    assert calls == [(100, 100, 800, 600)]
 
 
 def test_save_settings_leaves_fullscreen_and_writes_geometry(monkeypatch) -> None:
