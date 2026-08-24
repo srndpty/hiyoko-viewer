@@ -85,7 +85,11 @@ def decode_forward_message(data: bytes) -> list[str]:
     if not isinstance(args, list):
         logger.warning("received an IPC message with an unexpected args type: %r", type(args))
         return []
-    return [str(arg) for arg in args if arg]
+    if not all(isinstance(arg, str) for arg in args):
+        # 正常なクライアントは必ず list[str] を送る。型が違えば壊れたメッセージ扱い
+        logger.warning("received an IPC message with non-string args")
+        return []
+    return [arg for arg in args if arg]
 
 
 def _forward_to_running_instance(socket_factory: Callable[[], QLocalSocket] = QLocalSocket) -> bool:
@@ -128,8 +132,10 @@ def _forward_to_running_instance(socket_factory: Callable[[], QLocalSocket] = QL
             socket.abort()
             continue
 
-        # 受信側は disconnected を1メッセージの区切りとして扱うので、明示的に切断し、
-        # 切断が完了する（＝相手が受け取り切る）ところまで見届けてから成功にする
+        # 受信側は disconnected を1メッセージの区切りとして扱うので明示的に切断し、
+        # こちら側の切断処理が完了したことを確認してから成功にする。
+        # ※相手のハンドラ実行完了を保証する ACK プロトコルではない（相手が受信直後に
+        #   落ちても、こちらは成功として扱われうる）。
         socket.disconnectFromServer()
         if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState and (
             not socket.waitForDisconnected(IPC_CONNECT_TIMEOUT_MS)

@@ -36,7 +36,16 @@ def test_encode_decode_round_trip_keeps_paths() -> None:
 
 @pytest.mark.parametrize(
     "data",
-    [b"", b"not json", b"\xff\xfe", b'{"args": "a.png"}', b'{"other": []}'],
+    [
+        b"",
+        b"not json",
+        b"\xff\xfe",
+        b'{"args": "a.png"}',
+        b'{"other": []}',
+        b'{"args": [{"foo": 1}]}',
+        b'{"args": [123]}',
+        b'{"args": ["a.png", null]}',
+    ],
 )
 def test_decode_forward_message_tolerates_broken_payloads(data: bytes) -> None:
     assert app_module.decode_forward_message(data) == []
