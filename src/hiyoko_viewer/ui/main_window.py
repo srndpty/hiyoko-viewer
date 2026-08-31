@@ -81,12 +81,18 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
     def __init__(self) -> None:
         super().__init__()
 
+        # 起動フリーズの調査用。どの初期化まで進んだかをログだけで追えるようにする
+        # （ログオン直後はワーカー起動・設定読み込み・トレイ登録で待たされうる）
         self._init_state_variables()
         self._setup_ui()
+        logger.info("ui built")
         self._setup_worker_thread()
+        logger.info("worker thread started")
         self._create_connections()
         self._load_settings()
+        logger.info("settings loaded")
         self._setup_tray_icon()
+        logger.info("tray icon set up")
 
     # --------------------------------------------------------------------------
     # 初期化

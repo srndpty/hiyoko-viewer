@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import logging
 import os
@@ -32,16 +33,21 @@ IPC_CONNECT_TIMEOUT_MS = 1500
 # 送信側が disconnect せずに死んだ場合でも受信内容を処理するための保険
 IPC_RECEIVE_TIMEOUT_MS = 2000
 
+# 起動が終わらない（＝ユーザーからは「フリーズ」に見える）ときに、どこで止まって
+# いるかを残すための監視。ウィンドウ表示まで到達したら解除する。
+STARTUP_WATCHDOG_SEC = 20.0
+
 # _acquire_instance_lock の結果
 LOCK_ACQUIRED = "acquired"
 LOCK_ALREADY_RUNNING = "already_running"
 LOCK_UNAVAILABLE = "unavailable"
 
 
-def setup_logging() -> None:
+def setup_logging() -> Path | None:
     """GUI/PyInstaller(--windowed) 実行では標準出力が見えないため、ファイルに残す。
 
     %LOCALAPPDATA%\\HiyokoViewer\\logs\\hiyoko-viewer.log（取得できなければ %TEMP%）。
+    ログを置いたディレクトリを返す（用意できなければ None）。
     """
     base_dir = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
     log_dir = Path(base_dir) / "HiyokoViewer" / "logs"
@@ -57,6 +63,98 @@ def setup_logging() -> None:
     except OSError:
         # ログ用ディレクトリ/ファイルを用意できなくても起動自体は止めない
         logging.basicConfig(level=logging.INFO, force=True)
+        return None
+    return log_dir
+
+
+# --------------------------------------------------------------------------
+# 「ウィンドウが出ない」を後から追うための診断
+# --------------------------------------------------------------------------
+# 「起動したのに何も出ない」には、固まっている場合と黙って落ちた場合があり、
+# ユーザーからは区別がつかない。共有メモリもプロセス終了で消えるため、ログだけでは
+# どちらか判定できない。両方を痕跡として残す。
+# ※ faulthandler は書き込み先のファイルを開いたままにしておく必要があるため保持する
+_diagnostic_file = None
+
+
+def start_diagnostics(log_dir: Path | None, timeout: float = STARTUP_WATCHDOG_SEC) -> None:
+    """クラッシュハンドラを有効にし、起動ハングの監視を開始する。
+
+    - ``faulthandler.enable()``: ネイティブ側の致命的エラー（アクセス違反など）で
+      落ちた場合にスタックを残す。無言終了と区別がつくようにするのが目的。
+      ただし Windows では Qt がシェル/COM とやり取りする際の**処理済み**例外
+      （RPC_E_CANTCALLOUT_ININPUTSYNCCALL など）まで書き出してしまい、本物の
+      クラッシュが埋もれる。調べたいのは起動時なので、起動完了と同時に外す。
+    - ``dump_traceback_later()``: ``timeout`` 秒で起動が終わらなければ全スレッドの
+      スタックを書き出す。Qt/OS 側（プラットフォームプラグインの初期化、シェル未
+      準備でのトレイ登録など）を待って止まっていても、待ちを発生させた Python の
+      フレームはスタックに残るため、原因の切り分けにはこれが決定打になる。
+    """
+    global _diagnostic_file
+    if log_dir is None:
+        return
+    try:
+        # --windowed では sys.stderr が None になりうるので自前のファイルへ出す
+        _diagnostic_file = (log_dir / "hiyoko-viewer-hang.log").open("a", encoding="utf-8")
+    except OSError:
+        logger.warning("could not open the diagnostic log; skipping crash/hang diagnostics")
+        return
+    print(f"--- diagnostics armed (pid={os.getpid()}) ---", file=_diagnostic_file, flush=True)
+    # クラッシュ検出はプロセスが終わるまで有効にしておく（起動後に落ちる場合もある）
+    faulthandler.enable(file=_diagnostic_file)
+    faulthandler.dump_traceback_later(timeout, repeat=True, file=_diagnostic_file)
+    sys.excepthook = _log_uncaught_exception
+
+
+def _log_uncaught_exception(exc_type, exc_value, traceback) -> None:
+    """GUI 実行では stderr が無く、未捕捉例外の痕跡が一切残らないため自前で記録する。"""
+    logger.critical("unhandled exception", exc_info=(exc_type, exc_value, traceback))
+
+
+def cancel_startup_watchdog() -> None:
+    """起動を完了できたので、起動時だけの診断を解除する。"""
+    global _diagnostic_file
+    faulthandler.cancel_dump_traceback_later()
+    faulthandler.disable()
+    if _diagnostic_file is not None:
+        _diagnostic_file.close()
+        _diagnostic_file = None
+
+
+# 起動完了までの間だけ置くマーカー。ハングでもクラッシュでもなく（＝痕跡を残せない）
+# 強制終了された場合でも、「前回は起動しきれていない」という事実だけは次回に伝わる。
+STARTUP_MARKER_NAME = "startup-in-progress"
+
+
+def _startup_marker(log_dir: Path | None) -> Path | None:
+    return None if log_dir is None else log_dir / STARTUP_MARKER_NAME
+
+
+def begin_startup_marker(log_dir: Path | None) -> None:
+    """前回の起動が完了していたかを記録し、今回のマーカーを置く。"""
+    marker = _startup_marker(log_dir)
+    if marker is None:
+        return
+    try:
+        if marker.exists():
+            logger.warning(
+                "the previous run never finished starting up: %s", marker.read_text("utf-8")
+            )
+        marker.write_text(f"pid={os.getpid()}", encoding="utf-8")
+    except OSError as error:
+        # 診断用でしかないので、失敗しても起動は続ける
+        logger.warning("could not update the startup marker: %s", error)
+
+
+def end_startup_marker(log_dir: Path | None) -> None:
+    """起動を完了できたのでマーカーを消す。"""
+    marker = _startup_marker(log_dir)
+    if marker is None:
+        return
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("could not remove the startup marker: %s", error)
 
 
 # --------------------------------------------------------------------------
@@ -261,11 +359,16 @@ LOCK_UNAVAILABLE_MESSAGE = (
 def main() -> int:
     """アプリを起動する。新規起動なら QApplication を実行し、終了コードを返す。"""
     # GUI/PyInstaller 実行でも IPC 失敗等の痕跡を残せるよう、早い段階でログを初期化する
-    setup_logging()
+    log_dir = setup_logging()
     logger.info("starting hiyoko-viewer (pid=%s, argv=%s)", os.getpid(), sys.argv[1:])
+    start_diagnostics(log_dir)
 
     # QMessageBox などの GUI を委譲失敗時にも出せるよう、先に QApplication を作る
+    # ※ここはプラットフォームプラグイン初期化やフォントキャッシュ構築を伴い、
+    #   ログオン直後は待たされることがあるので前後にログを残す
+    logger.info("creating QApplication")
     app = QApplication(sys.argv)
+    logger.info("QApplication created")
 
     # --- 二重起動防止とインスタンス間通信 ---
     shared_memory = QSharedMemory(APP_UNIQUE_KEY)
@@ -276,6 +379,11 @@ def main() -> int:
         shared_memory.detach()
 
     lock_state = _acquire_instance_lock(shared_memory)
+    logger.info("single-instance lock: %s", lock_state)
+    # マーカーはこのプロセスが唯一のインスタンスになる場合だけ扱う
+    # （委譲して終わるインスタンスが触ると、常駐側の起動状態を上書きしてしまう）
+    if lock_state == LOCK_ACQUIRED:
+        begin_startup_marker(log_dir)
     if lock_state == LOCK_ALREADY_RUNNING:
         logger.info("another instance is running; forwarding args")
         if _forward_to_running_instance():
@@ -301,7 +409,9 @@ def main() -> int:
     if os.path.exists(app_icon_path):
         app.setWindowIcon(QIcon(app_icon_path))
 
+    logger.info("creating the main window")
     viewer = ImageViewer()
+    logger.info("main window created")
 
     # 2番目のインスタンスからファイルパスを受け取るためのサーバーをセットアップ
     local_server = QLocalServer()
@@ -331,6 +441,9 @@ def main() -> int:
 
     viewer.show()
     logger.info("main window shown at %s", viewer.geometry())
+    # ここまで来れば起動は完了。以降の待ちは監視対象外にする
+    cancel_startup_watchdog()
+    end_startup_marker(log_dir)
 
     def cleanup_on_quit():
         # ウィンドウ状態の保存はワーカー停止より先に行う。

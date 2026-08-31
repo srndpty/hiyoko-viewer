@@ -383,3 +383,25 @@ def test_acquire_instance_lock_does_not_confuse_other_errors(error, caplog) -> N
     # 別インスタンス扱いにすると「誰も応答しない委譲」に落ちるので分けること
     assert state == app_module.LOCK_UNAVAILABLE
     assert "shared memory is unavailable" in caplog.text
+
+
+def test_startup_marker_reports_a_previous_run_that_never_finished(tmp_path, caplog) -> None:
+    # 強制終了された前回はハング/クラッシュの痕跡を残せないので、マーカーだけが手がかり
+    app_module.begin_startup_marker(tmp_path)
+    with caplog.at_level("WARNING"):
+        app_module.begin_startup_marker(tmp_path)
+    assert "never finished starting up" in caplog.text
+
+
+def test_startup_marker_is_removed_once_startup_completes(tmp_path, caplog) -> None:
+    app_module.begin_startup_marker(tmp_path)
+    app_module.end_startup_marker(tmp_path)
+    with caplog.at_level("WARNING"):
+        app_module.begin_startup_marker(tmp_path)
+    assert "never finished starting up" not in caplog.text
+
+
+def test_startup_marker_is_skipped_without_a_log_directory() -> None:
+    # ログ用ディレクトリを用意できなくても起動は止めない
+    app_module.begin_startup_marker(None)
+    app_module.end_startup_marker(None)
