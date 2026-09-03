@@ -1434,3 +1434,70 @@ def test_close_event_hides_without_clearing_session() -> None:
     assert ignored == [True]
     assert viewer.image_files == ["photo.png"]
     assert viewer.current_index == 0
+
+
+class _TrayViewer(SimpleNamespace):
+    """setup_tray_icon のリトライ制御だけを検証するための最小スタブ"""
+
+    setup_tray_icon = ImageViewer.setup_tray_icon
+
+
+def _make_tray_viewer(results: list) -> _TrayViewer:
+    viewer = _TrayViewer(_tray_setup_attempts=0, calls=0)
+
+    def _setup_tray_icon() -> bool:
+        outcome = results[viewer.calls]
+        viewer.calls += 1
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    viewer._setup_tray_icon = _setup_tray_icon
+    return viewer
+
+
+def _patch_single_shot(monkeypatch) -> list:
+    scheduled: list = []
+    monkeypatch.setattr(
+        main_window,
+        "QTimer",
+        SimpleNamespace(singleShot=lambda ms, fn: scheduled.append((ms, fn))),
+    )
+    return scheduled
+
+
+def test_setup_tray_icon_does_not_retry_when_registered(monkeypatch) -> None:
+    scheduled = _patch_single_shot(monkeypatch)
+    viewer = _make_tray_viewer([True])
+
+    viewer.setup_tray_icon()
+
+    assert viewer.calls == 1
+    assert scheduled == []
+
+
+def test_setup_tray_icon_retries_until_registered(monkeypatch) -> None:
+    scheduled = _patch_single_shot(monkeypatch)
+    viewer = _make_tray_viewer([False, True])
+
+    viewer.setup_tray_icon()
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == main_window.TRAY_SETUP_RETRY_DELAY_MS
+
+    scheduled[0][1]()  # リトライを実行
+    assert viewer.calls == 2
+    assert len(scheduled) == 1  # 成功したので追加スケジュールはしない
+
+
+def test_setup_tray_icon_retries_after_exception_and_gives_up(monkeypatch) -> None:
+    scheduled = _patch_single_shot(monkeypatch)
+    attempts = main_window.TRAY_SETUP_MAX_ATTEMPTS
+    viewer = _make_tray_viewer([RuntimeError("shell not ready")] * attempts)
+
+    viewer.setup_tray_icon()
+    while scheduled:
+        _, retry = scheduled.pop()
+        retry()
+
+    # 例外は握りつぶし、上限回数で打ち切る（トレイ無しでも起動は続ける）
+    assert viewer.calls == attempts

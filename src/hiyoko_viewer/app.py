@@ -20,7 +20,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from .core.resources import resource_path
-from .ui.main_window import ImageViewer
+from .ui.main_window import TRAY_SETUP_INITIAL_DELAY_MS, ImageViewer
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +444,11 @@ def main() -> int:
     # ここまで来れば起動は完了。以降の待ちは監視対象外にする
     cancel_startup_watchdog()
     end_startup_marker(log_dir)
+
+    # トレイ登録はウィンドウ表示より後ろに回す。ログオン直後はシェル（explorer.exe）の
+    # 準備待ちでネイティブ呼び出しが返らないことがあり、ImageViewer.__init__ の中で
+    # やると show() / exec() に到達できず「白いウィンドウのまま固まる」状態になる。
+    QTimer.singleShot(TRAY_SETUP_INITIAL_DELAY_MS, viewer.setup_tray_icon)
 
     def cleanup_on_quit():
         # ウィンドウ状態の保存はワーカー停止より先に行う。

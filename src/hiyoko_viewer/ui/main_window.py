@@ -11,7 +11,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSettings, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -52,6 +52,12 @@ logger = logging.getLogger(__name__)
 MIN_VISIBLE_WIDTH = 120
 MIN_VISIBLE_HEIGHT = 30
 
+# トレイ登録は Windows ログオン直後だと explorer.exe（シェル）が未準備で待たされる
+# ことがある。ウィンドウ表示より後ろに回し、登録できなければ数回リトライする。
+TRAY_SETUP_INITIAL_DELAY_MS = 1000
+TRAY_SETUP_RETRY_DELAY_MS = 5000
+TRAY_SETUP_MAX_ATTEMPTS = 5
+
 
 class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow):
     request_load_image = pyqtSignal(int, str)  # (generation, path)
@@ -77,6 +83,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
     image_loader: ImageLoader
     image_label: QLabel
     scroll_area: QScrollArea
+    tray_icon: QSystemTrayIcon | None
 
     def __init__(self) -> None:
         super().__init__()
@@ -91,8 +98,9 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self._create_connections()
         self._load_settings()
         logger.info("settings loaded")
-        self._setup_tray_icon()
-        logger.info("tray icon set up")
+        # トレイ登録はここでは行わない。__init__ の中で待たされると show() まで到達
+        # できず、「白いウィンドウのまま固まる」ことになるため、イベントループ開始後に
+        # setup_tray_icon() を呼ぶ（呼び出しは app.main() 側）。
 
     # --------------------------------------------------------------------------
     # 初期化
@@ -115,6 +123,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.is_panning = False
         self.pan_last_mouse_pos = None
         self._was_maximized_before_fullscreen: bool = False
+        self.tray_icon = None
+        self._tray_setup_attempts = 0
 
     def _setup_ui(self) -> None:
         """UIコンポーネントのセットアップを行う"""
@@ -176,18 +186,79 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
     # --------------------------------------------------------------------------
     # システムトレイ
     # --------------------------------------------------------------------------
-    def _setup_tray_icon(self) -> None:
+    def setup_tray_icon(self) -> None:
+        """トレイアイコンを登録する（イベントループ開始後に呼ぶこと）。
+
+        ``__init__`` から同期的に呼んではならない。ログオン直後はシェルの応答待ちで
+        ここが返らず、``viewer.show()`` / ``app.exec()`` に到達できなくなる。
+        登録に失敗した場合は :data:`TRAY_SETUP_RETRY_DELAY_MS` 後に再試行する。
+        """
+        self._tray_setup_attempts += 1
+        attempt = self._tray_setup_attempts
+        logger.info("tray setup: begin (attempt %s/%s)", attempt, TRAY_SETUP_MAX_ATTEMPTS)
+        try:
+            registered = self._setup_tray_icon()
+        except Exception:
+            # トレイはビューア本体の必須リソースではないので、失敗しても起動は続ける
+            logger.exception("tray setup: raised (attempt %s)", attempt)
+            registered = False
+
+        if registered:
+            logger.info("tray setup: done (attempt %s)", attempt)
+            return
+        if attempt >= TRAY_SETUP_MAX_ATTEMPTS:
+            logger.warning("tray setup: giving up after %s attempts", attempt)
+            return
+        logger.info("tray setup: retrying in %s ms", TRAY_SETUP_RETRY_DELAY_MS)
+        QTimer.singleShot(TRAY_SETUP_RETRY_DELAY_MS, self.setup_tray_icon)
+
+    def _setup_tray_icon(self) -> bool:
+        """トレイアイコンを作成して表示する。登録できたかを返す。
+
+        どのネイティブ呼び出しで止まったのかをログだけで特定できるよう、Qt の各呼び
+        出しの前後にログを残している（起動ハングの調査用の instrumentation）。
+        """
+        if self.tray_icon is None:
+            self.tray_icon = self._create_tray_icon()
+
+        # Qt はトレイが後から使えるようになれば（TaskbarCreated）自動で再登録するため、
+        # ここでの可用性チェックは判断には使わず、記録だけに留める
+        logger.info("tray setup: before isSystemTrayAvailable")
+        available = QSystemTrayIcon.isSystemTrayAvailable()
+        logger.info("tray setup: after isSystemTrayAvailable: %s", available)
+
+        logger.info("tray setup: before show")
+        self.tray_icon.show()
+        visible = self.tray_icon.isVisible()
+        logger.info("tray setup: after show (visible=%s)", visible)
+        return visible
+
+    def _create_tray_icon(self) -> QSystemTrayIcon:
         """システムトレイアイコンとメニューを作成する"""
-        self.tray_icon = QSystemTrayIcon(self)
+        logger.info("tray setup: before QSystemTrayIcon ctor")
+        tray_icon = QSystemTrayIcon(self)
+        logger.info("tray setup: after QSystemTrayIcon ctor")
 
         # resource_path を使ってアイコンを設定
         icon_path = resource_path("app_icon.ico")
+        logger.info("tray setup: icon path resolved: %s", icon_path)
         if os.path.exists(icon_path):
-            self.tray_icon.setIcon(QIcon(icon_path))
+            logger.info("tray setup: before QIcon")
+            icon = QIcon(icon_path)
+            logger.info("tray setup: after QIcon")
 
-        self.tray_icon.setToolTip(DEFAULT_TITLE)
+            logger.info("tray setup: before setIcon")
+            tray_icon.setIcon(icon)
+            logger.info("tray setup: after setIcon")
+
+        logger.info("tray setup: before setToolTip")
+        tray_icon.setToolTip(DEFAULT_TITLE)
+        logger.info("tray setup: after setToolTip")
+
         # --- 右クリックメニューの作成 ---
+        logger.info("tray setup: before QMenu")
         tray_menu = QMenu()
+        logger.info("tray setup: after QMenu")
 
         show_action = QAction("ひよこビューアを表示", self)
         show_action.triggered.connect(self.show_window)
@@ -199,17 +270,21 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         # ここでは app.quit を直接呼ぶ
         quit_action.triggered.connect(QApplication.instance().quit)
         tray_menu.addAction(quit_action)
+        logger.info("tray setup: menu built")
 
-        self.tray_icon.setContextMenu(tray_menu)
+        # メニューは tray_icon に所有されないため、参照を保持しないと破棄される
+        self._tray_menu = tray_menu
+
+        logger.info("tray setup: before setContextMenu")
+        tray_icon.setContextMenu(tray_menu)
+        logger.info("tray setup: after setContextMenu")
 
         # --- 左クリックのアクションを接続 ---
-        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        logger.info("tray setup: before activated.connect")
+        tray_icon.activated.connect(self.on_tray_icon_activated)
+        logger.info("tray setup: after activated.connect")
 
-        # ログオン直後は explorer.exe が未準備でトレイ登録に失敗しうる（Qt は
-        # TaskbarCreated で再登録するが、失敗した事実は追えるよう残す）
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            logger.warning("system tray is not available at startup")
-        self.tray_icon.show()
+        return tray_icon
 
     def on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """トレイアイコンのクリックでウィンドウを復帰する"""
