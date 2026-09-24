@@ -26,8 +26,13 @@ class NavigationMixin:
         self._clear_display()
         self._load_generation += 1
         generation = self._load_generation
+        # D&D (QUrl.toLocalFile) やファイルダイアログは "D:/dir/a.png" のような / 区切りを返す。
+        # そのまま dirname + os.path.join すると "D:/dir\b.png" の混在パスになり、
+        # send2trash が付ける \\?\ 接頭辞付きでは / が区切りと解釈されず削除に失敗するため、
+        # 入口でネイティブ区切りに正規化しておく。
+        file_path = os.path.normpath(file_path)
         directory = os.path.dirname(file_path)
-        normalized_path = os.path.normcase(os.path.normpath(file_path))
+        normalized_path = os.path.normcase(file_path)
         self.request_load_list.emit(generation, directory, normalized_path)
 
     @pyqtSlot(int, list, int)

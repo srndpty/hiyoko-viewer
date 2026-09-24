@@ -449,6 +449,20 @@ def test_load_image_from_path_requests_directory_scan(tmp_path) -> None:
     ]
 
 
+def test_load_image_from_path_normalizes_forward_slashes(tmp_path) -> None:
+    # D&D / ファイルダイアログ由来の / 区切りパスでも、ワーカーにはネイティブ区切りで渡す
+    emitter = _Emitter()
+    image_path = tmp_path / "anim.png"
+    viewer = SimpleNamespace(request_load_list=emitter, _load_generation=0)
+    viewer._clear_display = lambda: None
+
+    ImageViewer.load_image_from_path(viewer, str(image_path).replace(os.sep, "/"))
+
+    assert emitter.emitted == [
+        (1, os.path.normpath(str(tmp_path)), os.path.normcase(os.path.normpath(str(image_path))))
+    ]
+
+
 def test_load_image_from_path_ignores_empty_path() -> None:
     viewer = SimpleNamespace()
     viewer._clear_display = lambda: (_ for _ in ()).throw(AssertionError("should not clear"))
