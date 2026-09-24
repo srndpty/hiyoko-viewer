@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$Build,
     [string]$Destination = (Join-Path $env:ProgramFiles "hiyoko-viewer")
 )

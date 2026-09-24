@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from PyQt6.QtGui import QMovie
     from PyQt6.QtSvg import QSvgRenderer
 
+    from .apng_movie import ApngMovie
+
 logger = logging.getLogger(__name__)
 
 # ウィンドウが「掴める」とみなす最小の可視サイズ（タイトルバー相当）
@@ -73,7 +75,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
     current_index: int
     original_pixmap: QPixmap
     svg_renderer: QSvgRenderer | None
-    current_movie: QMovie | None
+    current_movie: QMovie | ApngMovie | None
     current_filesize: int
     scale_factor: float
     space_key_pressed: bool

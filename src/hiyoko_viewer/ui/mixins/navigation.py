@@ -26,8 +26,13 @@ class NavigationMixin:
         self._clear_display()
         self._load_generation += 1
         generation = self._load_generation
+        # D&D (QUrl.toLocalFile) やファイルダイアログは "D:/dir/a.png" のような / 区切りを返す。
+        # そのまま dirname + os.path.join すると "D:/dir\b.png" の混在パスになり、
+        # send2trash が付ける \\?\ 接頭辞付きでは / が区切りと解釈されず削除に失敗するため、
+        # 入口でネイティブ区切りに正規化しておく。
+        file_path = os.path.normpath(file_path)
         directory = os.path.dirname(file_path)
-        normalized_path = os.path.normcase(os.path.normpath(file_path))
+        normalized_path = os.path.normcase(file_path)
         self.request_load_list.emit(generation, directory, normalized_path)
 
     @pyqtSlot(int, list, int)
@@ -100,7 +105,7 @@ class NavigationMixin:
         if self.is_loading or not self.image_files:
             return
         source_path = self.image_files[self.current_index]
-        # GIF/animated WebP 表示中は QMovie がファイルハンドルを掴んでおり、
+        # GIF/animated WebP/APNG 表示中は QMovie 等がファイルハンドルを掴んでおり、
         # Windows では掴んだまま move すると失敗するため、先に解放する。
         self._release_current_file_handles()
         dest_folder = os.path.join(os.path.dirname(source_path), subfolder_name)

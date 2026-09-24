@@ -449,6 +449,20 @@ def test_load_image_from_path_requests_directory_scan(tmp_path) -> None:
     ]
 
 
+def test_load_image_from_path_normalizes_forward_slashes(tmp_path) -> None:
+    # D&D / ファイルダイアログ由来の / 区切りパスでも、ワーカーにはネイティブ区切りで渡す
+    emitter = _Emitter()
+    image_path = tmp_path / "anim.png"
+    viewer = SimpleNamespace(request_load_list=emitter, _load_generation=0)
+    viewer._clear_display = lambda: None
+
+    ImageViewer.load_image_from_path(viewer, str(image_path).replace(os.sep, "/"))
+
+    assert emitter.emitted == [
+        (1, os.path.normpath(str(tmp_path)), os.path.normcase(os.path.normpath(str(image_path))))
+    ]
+
+
 def test_load_image_from_path_ignores_empty_path() -> None:
     viewer = SimpleNamespace()
     viewer._clear_display = lambda: (_ for _ in ()).throw(AssertionError("should not clear"))
@@ -1004,6 +1018,34 @@ def test_update_image_display_uses_movie_for_gif(monkeypatch) -> None:
     assert movie.started is True
     assert viewer.is_loading is False
     assert titles == ["[1/1] animation.gif"]
+
+
+def test_update_image_display_uses_apng_movie_for_animated_png(monkeypatch) -> None:
+    movie = _Movie()
+    slots: list = []
+    movie.frameChanged = SimpleNamespace(connect=slots.append)
+    viewer = SimpleNamespace(
+        image_files=["animation.png"],
+        current_index=0,
+        current_movie=None,
+        image_label=_ImageLabel(),
+        _load_generation=1,
+    )
+    viewer.stop_movie = lambda: None
+    viewer.on_gif_first_frame = lambda frame: None
+    viewer.update_gif_frame_status = lambda frame: None
+    viewer._show_apng_frame = lambda frame: None
+    viewer.setWindowTitle = lambda title: None
+    monkeypatch.setattr(rendering, "is_animated_png", lambda path: True)
+    monkeypatch.setattr(rendering, "ApngMovie", lambda path: movie)
+
+    ImageViewer.update_image_display(viewer, 1, "animation.png", _Pixmap())
+
+    assert viewer.current_movie is movie
+    # QLabel.setMovie は QMovie 専用なので APNG では呼ばず、フレーム毎に pixmap を差し替える
+    assert viewer.image_label.movies == []
+    assert viewer._show_apng_frame in slots
+    assert movie.started is True
 
 
 def test_update_image_display_ignores_stale_path() -> None:
