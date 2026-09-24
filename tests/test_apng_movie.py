@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from PyQt6.QtGui import QMovie
 from PyQt6.QtWidgets import QApplication
 
@@ -31,7 +31,8 @@ def _save_apng(path, *, loop: int = 0, default_image: bool = False) -> None:
         path,
         save_all=True,
         append_images=frames[1:],
-        duration=[50, 60, 70] if not default_image else [0, 50, 60, 70],
+        # default_image=True でも duration はアニメーションフレーム分だけ指定する（Pillow の仕様）
+        duration=[50, 60, 70],
         loop=loop,
         default_image=default_image,
     )
@@ -127,6 +128,88 @@ def test_apng_movie_skips_default_image(qapp, tmp_path) -> None:
     assert movie.frameCount() == 3
     movie.start()
     assert _pixel(movie) == COLORS[0]
+    assert movie._timer.interval() == 50
+    movie._advance()
+    assert _pixel(movie) == COLORS[1]
+    movie.stop()
+
+
+class _FakeElapsed:
+    """QElapsedTimer の代わりに、デコードに掛かった時間を固定値で返す。"""
+
+    elapsed_ms = 0
+
+    def start(self) -> None:
+        pass
+
+    def elapsed(self) -> int:
+        return self.elapsed_ms
+
+
+@pytest.mark.parametrize(("decode_ms", "expected_interval"), [(30, 40), (70, 0), (100, 0)])
+def test_apng_movie_schedules_next_frame_from_display_deadline(
+    qapp, tmp_path, monkeypatch, decode_ms, expected_interval
+) -> None:
+    # 次フレームも同程度デコードで遅れて表示されるので、タイマーからデコード時間を差し引く。
+    # delay をそのまま使うと毎フレーム「delay + デコード時間」表示されて再生が遅くなる。
+    monkeypatch.setattr(_FakeElapsed, "elapsed_ms", decode_ms)
+    monkeypatch.setattr(apng_movie, "QElapsedTimer", _FakeElapsed)
+    path = tmp_path / "anim.png"
+    _save_apng(path)
+    movie = ApngMovie(str(path))
+
+    movie.start()
+    movie._advance()
+    movie._advance()  # frame 2 (duration=70)
+
+    assert movie.currentFrameNumber() == 2
+    assert movie._timer.interval() == expected_interval
+    movie.stop()
+
+
+def _composite_apng(path, *, disposal: int) -> None:
+    # frame0: 全面赤 / frame1: (0,0) だけ緑で残りは透明。frame1 は OP_OVER で重ねる
+    red = Image.new("RGBA", (4, 3), COLORS[0])
+    green_dot = Image.new("RGBA", (4, 3), (0, 0, 0, 0))
+    green_dot.putpixel((0, 0), COLORS[1])
+    red.save(
+        path,
+        save_all=True,
+        append_images=[green_dot],
+        duration=[50, 50],
+        disposal=[disposal, PngImagePlugin.Disposal.OP_NONE],
+        blend=[PngImagePlugin.Blend.OP_SOURCE, PngImagePlugin.Blend.OP_OVER],
+    )
+
+
+@pytest.mark.parametrize(
+    ("disposal", "expected_background"),
+    [
+        # 前フレームを残したまま重ねる
+        (PngImagePlugin.Disposal.OP_NONE, COLORS[0]),
+        # 前フレームの領域を透明に戻してから重ねる
+        (PngImagePlugin.Disposal.OP_BACKGROUND, (0, 0, 0, 0)),
+    ],
+)
+def test_apng_movie_applies_disposal_and_blend(
+    qapp, tmp_path, disposal, expected_background
+) -> None:
+    # dispose/blend の合成は Pillow の seek() に任せているので、その前提が崩れないことを確認する
+    path = tmp_path / "composite.png"
+    _composite_apng(path, disposal=disposal)
+    movie = ApngMovie(str(path))
+
+    assert movie.jumpToFrame(1) is True
+    image = movie.currentPixmap().toImage()
+    background = image.pixelColor(1, 1)
+
+    assert _pixel(movie) == COLORS[1]
+    assert (
+        background.red(),
+        background.green(),
+        background.blue(),
+        background.alpha(),
+    ) == expected_background
     movie.stop()
 
 

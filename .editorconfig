@@ -1,0 +1,5 @@
+# Windows PowerShell 5.1 は BOM 無しの UTF-8 を ANSI (CP932) として読み、日本語コメントを含む
+# スクリプトが構文エラーになる。install-windows.ps1 は昇格時に powershell.exe -File で
+# 自分自身を再実行する（dev.ps1 を経由しない）ため、これらのファイルは BOM 付きで保存する。
+[{dev.ps1,scripts/install-windows.ps1}]
+charset = utf-8-bom

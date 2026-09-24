@@ -233,8 +233,12 @@ function Invoke-Clean {
         if (-not (Test-Path -LiteralPath $target)) {
             continue
         }
-        # 念のため git 管理下のファイルを含むものは消さない。
+        # 念のため git 管理下のファイルを含むものは消さない（git は worktree 内の絶対パスも受け付ける）。
+        # 判定できなかった場合は消さずに中断する。
         $tracked = & git -C $RepoRoot ls-files -- $target
+        if ($LASTEXITCODE -ne 0) {
+            throw "git ls-files failed while checking clean target: $target"
+        }
         if ($tracked) {
             Write-Host "skip (tracked): $target"
             continue
