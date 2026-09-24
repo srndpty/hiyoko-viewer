@@ -20,6 +20,7 @@ from ...config.constants import (
     ZOOM_IN_FACTOR,
     ZOOM_OUT_FACTOR,
 )
+from ..apng_movie import ApngMovie, is_animated_png
 
 
 class RenderingMixin:
@@ -49,21 +50,30 @@ class RenderingMixin:
         self.stop_movie()
         ext = os.path.splitext(file_path)[1].lower()
         use_movie = False
+        is_apng = False
 
         if ext == ".gif":
             use_movie = True
         elif ext == ".webp" and self._is_animated_webp(file_path):
             # アニメーション WebP だけ QMovie で扱う
             use_movie = True
+        elif ext == ".png" and is_animated_png(file_path):
+            # Qt は APNG を解釈できないため、Pillow ベースの ApngMovie で扱う
+            use_movie = True
+            is_apng = True
 
         if use_movie:
             self.svg_renderer = None
-            movie = QMovie(file_path)
+            movie = ApngMovie(file_path) if is_apng else QMovie(file_path)
             if movie.isValid():
                 self.current_movie = movie
                 self.current_movie.frameChanged.connect(self.on_gif_first_frame)
                 self.current_movie.frameChanged.connect(self.update_gif_frame_status)
-                self.image_label.setMovie(self.current_movie)
+                if is_apng:
+                    # QLabel は QMovie しか setMovie できないので、フレームごとに pixmap を差し替える
+                    self.current_movie.frameChanged.connect(self._show_apng_frame)
+                else:
+                    self.image_label.setMovie(self.current_movie)
                 self.current_movie.start()
             else:
                 # 何らかの理由で QMovie が扱えなければ静止画フォールバック
@@ -113,6 +123,11 @@ class RenderingMixin:
             self.update_status_bar()
 
     @pyqtSlot(int)
+    def _show_apng_frame(self, frame_number: int) -> None:
+        if isinstance(self.current_movie, ApngMovie):
+            self.image_label.setPixmap(self.current_movie.currentPixmap())
+
+    @pyqtSlot(int)
     def update_gif_frame_status(self, frame_number: int) -> None:
         if self.current_movie and self.current_movie.isValid():
             self.update_status_bar()
@@ -155,9 +170,9 @@ class RenderingMixin:
         self.statusBar().showMessage(status_text)
 
     def _release_current_file_handles(self) -> None:
-        """現在表示中のファイルを掴み得るリソース（QMovie）を解放する。
+        """現在表示中のファイルを掴み得るリソース（QMovie / ApngMovie）を解放する。
 
-        QMovie は Windows で元ファイルのハンドルを保持し得るため、move/delete の前に
+        QMovie / ApngMovie は Windows で元ファイルのハンドルを保持し得るため、move/delete の前に
         明示的に止める。静止画の pixmap は既にメモリ上にあり元ファイルを掴まないので、
         ラベル表示まで消す必要はない（消すと操作失敗時に表示だけ空になってしまう）。
         """
@@ -187,7 +202,9 @@ class RenderingMixin:
             self.scroll_area.setWidgetResizable(False)
             scaled_size = self.original_pixmap.size() * self.scale_factor
             self.image_label.setFixedSize(scaled_size)
-        if self.image_label.movie() is not self.current_movie:
+        if isinstance(self.current_movie, ApngMovie):
+            self.image_label.setPixmap(self.current_movie.currentPixmap())
+        elif self.image_label.movie() is not self.current_movie:
             self.image_label.setMovie(self.current_movie)
         if self.current_movie and self.current_movie.state() != QMovie.MovieState.Running:
             self.current_movie.start()

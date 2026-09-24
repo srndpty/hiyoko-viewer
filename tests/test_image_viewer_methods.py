@@ -1006,6 +1006,34 @@ def test_update_image_display_uses_movie_for_gif(monkeypatch) -> None:
     assert titles == ["[1/1] animation.gif"]
 
 
+def test_update_image_display_uses_apng_movie_for_animated_png(monkeypatch) -> None:
+    movie = _Movie()
+    slots: list = []
+    movie.frameChanged = SimpleNamespace(connect=slots.append)
+    viewer = SimpleNamespace(
+        image_files=["animation.png"],
+        current_index=0,
+        current_movie=None,
+        image_label=_ImageLabel(),
+        _load_generation=1,
+    )
+    viewer.stop_movie = lambda: None
+    viewer.on_gif_first_frame = lambda frame: None
+    viewer.update_gif_frame_status = lambda frame: None
+    viewer._show_apng_frame = lambda frame: None
+    viewer.setWindowTitle = lambda title: None
+    monkeypatch.setattr(rendering, "is_animated_png", lambda path: True)
+    monkeypatch.setattr(rendering, "ApngMovie", lambda path: movie)
+
+    ImageViewer.update_image_display(viewer, 1, "animation.png", _Pixmap())
+
+    assert viewer.current_movie is movie
+    # QLabel.setMovie は QMovie 専用なので APNG では呼ばず、フレーム毎に pixmap を差し替える
+    assert viewer.image_label.movies == []
+    assert viewer._show_apng_frame in slots
+    assert movie.started is True
+
+
 def test_update_image_display_ignores_stale_path() -> None:
     calls: list[str] = []
     viewer = SimpleNamespace(

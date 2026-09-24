@@ -100,7 +100,7 @@ class NavigationMixin:
         if self.is_loading or not self.image_files:
             return
         source_path = self.image_files[self.current_index]
-        # GIF/animated WebP 表示中は QMovie がファイルハンドルを掴んでおり、
+        # GIF/animated WebP/APNG 表示中は QMovie 等がファイルハンドルを掴んでおり、
         # Windows では掴んだまま move すると失敗するため、先に解放する。
         self._release_current_file_handles()
         dest_folder = os.path.join(os.path.dirname(source_path), subfolder_name)
