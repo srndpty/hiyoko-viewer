@@ -98,6 +98,47 @@ def test_apng_movie_stops_after_loop_count(qapp, tmp_path) -> None:
     movie.stop()
 
 
+def test_apng_movie_restarts_from_first_frame_after_finishing(qapp, tmp_path) -> None:
+    # リサイズ等で再び start() されたら、QMovie と同じく先頭から再生し直す
+    path = tmp_path / "anim.png"
+    _save_apng(path, loop=1)
+    movie = ApngMovie(str(path))
+    movie.start()
+    for _ in range(3):
+        movie._advance()
+    assert movie.state() == QMovie.MovieState.NotRunning
+
+    movie.start()
+
+    assert movie.state() == QMovie.MovieState.Running
+    assert movie.currentFrameNumber() == 0
+    assert _pixel(movie) == COLORS[0]
+    assert movie._timer.interval() == 50
+    movie._advance()
+    movie._advance()
+    assert movie.currentFrameNumber() == 2
+    movie._advance()  # もう 1 周分再生してから止まる
+    assert movie.state() == QMovie.MovieState.NotRunning
+    movie.stop()
+
+
+def test_apng_movie_resumes_from_stepped_frame_after_finishing(qapp, tmp_path) -> None:
+    # 終了後にコマ送りしたフレームは、次の start() で先頭に巻き戻さない
+    path = tmp_path / "anim.png"
+    _save_apng(path, loop=1)
+    movie = ApngMovie(str(path))
+    movie.start()
+    for _ in range(3):
+        movie._advance()
+
+    assert movie.jumpToFrame(1) is True
+    movie.start()
+
+    assert movie.currentFrameNumber() == 1
+    assert movie.state() == QMovie.MovieState.Running
+    movie.stop()
+
+
 def test_apng_movie_pause_jump_and_stop_release_file(qapp, tmp_path) -> None:
     path = tmp_path / "anim.png"
     _save_apng(path)

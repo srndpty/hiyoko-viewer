@@ -201,7 +201,14 @@ function Invoke-Check {
 }
 
 function Invoke-Clean {
-    $dryRun = $Rest -contains "-DryRun"
+    # 破壊的操作なので、-DryRun の打ち間違いなどで削除に進まないよう未知の引数は拒否する。
+    foreach ($arg in $Rest) {
+        if ([string]$arg -ne "-DryRun") {
+            $script:ExitCode = 2
+            throw "Unknown clean option: $arg (available: -DryRun)"
+        }
+    }
+    $dryRun = $Rest.Count -gt 0
 
     # .gitignore 済みで、ツールが再生成するものだけを対象にする。
     # dist\*.zip（配布物）や tmp\ 直下の手作業ファイル、.venv は対象外。

@@ -61,6 +61,8 @@ class ApngMovie(QObject):
         self._frame_count = 0
         self._loop_count = 0  # 0 は無限ループ
         self._loops_done = 0
+        # 指定回数のループを終えて止まったか。次の start() で先頭から再生し直す（QMovie と同じ）
+        self._finished = False
         self._current_frame = -1
         self._current_pixmap = QPixmap()
         self._current_delay = MIN_FRAME_DELAY_MS
@@ -108,8 +110,9 @@ class ApngMovie(QObject):
     def start(self) -> None:
         if not self.isValid() or self._state == QMovie.MovieState.Running:
             return
-        if self._current_frame < 0 and not self._show_frame(0):
+        if (self._current_frame < 0 or self._finished) and not self._show_frame(0):
             return
+        self._finished = False
         self._loops_done = 0
         self._state = QMovie.MovieState.Running
         self._timer.start(self._current_delay)
@@ -138,6 +141,8 @@ class ApngMovie(QObject):
             return False
         if not self._show_frame(frame_number):
             return False
+        # 終了後にコマ送りした場合は、次の start() をそのフレームから再開する
+        self._finished = False
         if self._state == QMovie.MovieState.Running:
             self._timer.start(self._current_delay)
         return True
@@ -158,6 +163,7 @@ class ApngMovie(QObject):
             if self._loop_count and self._loops_done >= self._loop_count:
                 # 指定回数ループしたら最終フレームで止める（QMovie と同じ挙動）
                 self._state = QMovie.MovieState.NotRunning
+                self._finished = True
                 return
             next_frame = 0
         if self._show_frame(next_frame) and self._state == QMovie.MovieState.Running:
