@@ -21,6 +21,7 @@ from ...config.constants import (
     ZOOM_OUT_FACTOR,
 )
 from ..apng_movie import ApngMovie, is_animated_png
+from ..frame_progress import set_frame_progress
 
 
 class RenderingMixin:
@@ -144,6 +145,7 @@ class RenderingMixin:
     def update_status_bar(self) -> None:
         if self.original_pixmap.isNull():
             self.statusBar().clearMessage()
+            set_frame_progress(self, 0, 0)
             return
         parts: list[str] = []
         w, h = self.original_pixmap.width(), self.original_pixmap.height()
@@ -164,8 +166,11 @@ class RenderingMixin:
         if self.current_movie and self.current_movie.isValid():
             state = self.current_movie.state()
             state_icon = "►" if state == QMovie.MovieState.Running else "⏸"
-            frame_info = f"🎞️ [{self.current_movie.currentFrameNumber() + 1}/{self.current_movie.frameCount()}]"
-            parts.append(f"{frame_info} {state_icon}")
+            frame_number = self.current_movie.currentFrameNumber() + 1
+            frame_count = self.current_movie.frameCount()
+            set_frame_progress(self, frame_number, frame_count, state_icon)
+        else:
+            set_frame_progress(self, 0, 0)
         status_text = "  |  ".join(parts)
         self.statusBar().showMessage(status_text)
 
@@ -262,6 +267,8 @@ class RenderingMixin:
         return QPixmap.fromImage(image)
 
     def _toggle_fit_mode(self) -> None:
+        if getattr(self, "is_loading", False):
+            return
         self.fit_to_window = not self.fit_to_window
         if not self.fit_to_window:
             self.scale_factor = 1.0
@@ -307,6 +314,8 @@ class RenderingMixin:
             )
 
     def _toggle_gif_playback(self) -> bool:
+        if getattr(self, "is_loading", False):
+            return False
         if self.current_movie and self.current_movie.isValid():
             state = self.current_movie.state()
             if state == QMovie.MovieState.Running:
@@ -318,6 +327,8 @@ class RenderingMixin:
         return False
 
     def _step_gif_frame(self, key: int) -> None:
+        if getattr(self, "is_loading", False):
+            return
         if (
             self.current_movie
             and self.current_movie.isValid()
@@ -339,4 +350,5 @@ class RenderingMixin:
         self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
         self.current_index = -1
         self.statusBar().showMessage("")
+        set_frame_progress(self, 0, 0)
         self.setWindowTitle(DEFAULT_TITLE)

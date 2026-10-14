@@ -13,8 +13,6 @@ from PyQt6.QtGui import (
     QWheelEvent,
 )
 
-from ...config.constants import NG_FOLDER, OK_FOLDER
-
 
 class InputEventMixin:
     """イベントの横取りとディスパッチを担うメソッド群。"""
@@ -50,19 +48,11 @@ class InputEventMixin:
             event.ignore()
             return
         key = event.key()
+        # 画像送り・表示切替・終了などはメニューの QAction ショートカットが処理する。
+        # スペースは押している間だけパンモードになるので、アクションにはしない。
         if key == Qt.Key.Key_Space and not event.isAutoRepeat():
             self.space_key_pressed = True
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
-        elif key == Qt.Key.Key_F11:
-            self._toggle_fullscreen()
-        elif key == Qt.Key.Key_Escape:
-            self.close()
-        elif key == Qt.Key.Key_F:
-            self._toggle_fit_mode()
-        elif key == Qt.Key.Key_R:
-            self._toggle_shuffle_mode()
-        elif key == Qt.Key.Key_I:
-            self.show_metadata_dialog()
         else:
             super().keyPressEvent(event)
 
@@ -148,28 +138,9 @@ class InputEventMixin:
         return False
 
     def _handle_key_press_on_scroll_area(self, event: QKeyEvent) -> bool:
-        """スクロールエリアがフォーカス時のキー入力を処理する"""
-        if self.is_loading:
-            return True
-        key = event.key()
-        modifiers = event.modifiers()
-        if modifiers & Qt.KeyboardModifier.KeypadModifier:
-            if key == Qt.Key.Key_7:
-                self.move_current_image_and_load_next(OK_FOLDER)
-                return True
-            elif key == Qt.Key.Key_9:
-                self.move_current_image_and_load_next(NG_FOLDER)
-                return True
-        elif key in (Qt.Key.Key_Right, Qt.Key.Key_PageDown):
-            self.show_next_image()
-            return True
-        elif key in (Qt.Key.Key_Left, Qt.Key.Key_PageUp):
-            self.show_prev_image()
-            return True
-        elif key == Qt.Key.Key_Delete:
-            self.delete_current_image_and_load_next()
-            return True
-        elif key == Qt.Key.Key_Period:
-            self._step_gif_frame(key)
-            return True
-        return False
+        """読み込み中はスクロールエリア既定のキー処理（矢印でスクロール等）を止める。
+
+        画像送りや削除などの操作はメニューのショートカットが処理する。
+        """
+        del event
+        return self.is_loading

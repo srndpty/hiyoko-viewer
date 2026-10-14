@@ -144,7 +144,7 @@ class NavigationMixin:
             self.statusBar().showMessage("エラー: ファイルの削除に失敗しました", 5000)
 
     def _toggle_shuffle_mode(self) -> None:
-        if not self.image_files:
+        if getattr(self, "is_loading", False) or not self.image_files:
             return
         self.is_shuffled = not self.is_shuffled
         if self.is_shuffled:

@@ -12,7 +12,7 @@ import os
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon, QPixmap
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -27,7 +27,9 @@ from PyQt6.QtWidgets import (
 
 from ..config.constants import (
     DEFAULT_TITLE,
+    NG_FOLDER,
     NOTICE_TEXT_STYLE,
+    OK_FOLDER,
     SETTINGS_APP,
     SETTINGS_ORG,
     SUPPORTED_EXTENSIONS,
@@ -37,6 +39,7 @@ from ..core.metadata import load_metadata_text
 from ..core.resources import resource_path
 from ..services.image_loader import ImageLoader
 from .dialogs.metadata_dialog import MetadataDialog
+from .frame_progress import FrameProgressBar
 from .mixins.input import InputEventMixin
 from .mixins.navigation import NavigationMixin
 from .mixins.rendering import RenderingMixin
@@ -59,6 +62,11 @@ MIN_VISIBLE_HEIGHT = 30
 TRAY_SETUP_INITIAL_DELAY_MS = 1000
 TRAY_SETUP_RETRY_DELAY_MS = 5000
 TRAY_SETUP_MAX_ATTEMPTS = 5
+
+
+def _numpad_sequence(key: Qt.Key) -> QKeySequence:
+    """テンキーだけに反応するショートカット。本体の数字キーとは分ける。"""
+    return QKeySequence(key | Qt.KeyboardModifier.KeypadModifier)
 
 
 class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow):
@@ -141,12 +149,16 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.scroll_area.setWidget(self.image_label)
         self.scroll_area.setWidgetResizable(True)
         self.setCentralWidget(self.scroll_area)
-        menu: QMenuBar = self.menuBar()
-        file_menu = menu.addMenu("ファイル")
-        self.open_action = file_menu.addAction("開く")
-        self.open_action.setShortcut("Ctrl+O")
+        self._setup_menus()
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
+        # フレーム番号とゲージは右端に並べ、数値とバーを同じ場所で読めるようにする
+        self.frame_label = QLabel(self.status_bar)
+        self.frame_label.setStyleSheet("color: #CCCCCC; background: transparent;")
+        self.frame_label.setVisible(False)
+        self.frame_progress = FrameProgressBar(self.status_bar)
+        self.status_bar.addPermanentWidget(self.frame_label)
+        self.status_bar.addPermanentWidget(self.frame_progress)
         self.status_bar.setStyleSheet("""
             QStatusBar {
                 background-color: #2D2D2D; /* 背景色をメインウィンドウと合わせる */
@@ -159,9 +171,70 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             }
         """)
 
+    def _setup_menus(self) -> None:
+        """サポートしている操作をメニューバーへ登録する。
+
+        ``ラベル(&X)`` は Windows のアクセスキー。``ファイル(&F)`` は
+        「ファイル(F)」と表示され、Alt+F のあと項目の括弧内のキーで実行する。
+        setShortcut したキーはメニューを開かなくても動作する。
+        """
+        menu: QMenuBar = self.menuBar()
+
+        file_menu = menu.addMenu("ファイル(&F)")
+        self.open_action = file_menu.addAction("開く(&O)...")
+        self.open_action.setShortcut(QKeySequence("Ctrl+O"))
+        file_menu.addSeparator()
+        self.move_ok_action = file_menu.addAction("_ok フォルダへ移動(&K)")
+        self.move_ok_action.setShortcut(_numpad_sequence(Qt.Key.Key_7))
+        self.move_ng_action = file_menu.addAction("_ng フォルダへ移動(&N)")
+        self.move_ng_action.setShortcut(_numpad_sequence(Qt.Key.Key_9))
+        self.delete_action = file_menu.addAction("ごみ箱へ移動(&D)")
+        self.delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+        file_menu.addSeparator()
+        self.hide_to_tray_action = file_menu.addAction("トレイに格納(&T)")
+        self.hide_to_tray_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.quit_action = file_menu.addAction("終了(&X)")
+
+        view_menu = menu.addMenu("表示(&V)")
+        self.fit_action = view_menu.addAction("フィット表示(&F)")
+        self.fit_action.setShortcut(QKeySequence(Qt.Key.Key_F))
+        self.fullscreen_action = view_menu.addAction("フルスクリーン(&L)")
+        self.fullscreen_action.setShortcut(QKeySequence(Qt.Key.Key_F11))
+        self.shuffle_action = view_menu.addAction("シャッフル(&S)")
+        self.shuffle_action.setShortcut(QKeySequence(Qt.Key.Key_R))
+        self.metadata_action = view_menu.addAction("メタデータ(&I)...")
+        self.metadata_action.setShortcut(QKeySequence(Qt.Key.Key_I))
+        view_menu.addSeparator()
+        self.next_action = view_menu.addAction("次の画像(&N)")
+        self.next_action.setShortcuts(
+            [QKeySequence(Qt.Key.Key_Right), QKeySequence(Qt.Key.Key_PageDown)]
+        )
+        self.prev_action = view_menu.addAction("前の画像(&P)")
+        self.prev_action.setShortcuts(
+            [QKeySequence(Qt.Key.Key_Left), QKeySequence(Qt.Key.Key_PageUp)]
+        )
+
+        animation_menu = menu.addMenu("アニメーション(&A)")
+        self.play_pause_action = animation_menu.addAction("再生/一時停止(&P)")
+        self.step_frame_action = animation_menu.addAction("コマ送り(&S)")
+        self.step_frame_action.setShortcut(QKeySequence(Qt.Key.Key_Period))
+
     def _create_connections(self) -> None:
         """シグナルとスロット、イベントフィルターを接続する"""
         self.open_action.triggered.connect(self.open_image)
+        self.move_ok_action.triggered.connect(self._move_current_to_ok)
+        self.move_ng_action.triggered.connect(self._move_current_to_ng)
+        self.delete_action.triggered.connect(self.delete_current_image_and_load_next)
+        self.hide_to_tray_action.triggered.connect(self._hide_to_tray)
+        self.quit_action.triggered.connect(self._quit_application)
+        self.fit_action.triggered.connect(self._toggle_fit_mode)
+        self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
+        self.shuffle_action.triggered.connect(self._toggle_shuffle_mode)
+        self.metadata_action.triggered.connect(self.show_metadata_dialog)
+        self.next_action.triggered.connect(self.show_next_image)
+        self.prev_action.triggered.connect(self.show_prev_image)
+        self.play_pause_action.triggered.connect(self._toggle_gif_playback)
+        self.step_frame_action.triggered.connect(self._step_current_frame)
         self.scroll_area.viewport().installEventFilter(self)
         self.scroll_area.installEventFilter(self)
 
@@ -319,7 +392,28 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
 
+    def _move_current_to_ok(self) -> None:
+        self.move_current_image_and_load_next(OK_FOLDER)
+
+    def _move_current_to_ng(self) -> None:
+        self.move_current_image_and_load_next(NG_FOLDER)
+
+    def _hide_to_tray(self) -> None:
+        if self.is_loading:
+            return
+        self.close()
+
+    def _quit_application(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def _step_current_frame(self) -> None:
+        self._step_gif_frame(0)
+
     def _toggle_fullscreen(self) -> None:
+        if getattr(self, "is_loading", False):
+            return
         if self.isFullScreen():
             # --- 全画面から復帰する場合 ---
             # 記憶しておいた状態に応じて復元する
@@ -335,6 +429,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
 
     def show_metadata_dialog(self):
         """現在の画像のメタデータを表示するダイアログを開く"""
+        if getattr(self, "is_loading", False):
+            return
         if not self.image_files or self.current_index < 0:
             return
 
