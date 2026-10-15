@@ -234,9 +234,10 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.next_action.triggered.connect(self.show_next_image)
         self.prev_action.triggered.connect(self.show_prev_image)
         self.play_pause_action.triggered.connect(self._toggle_gif_playback)
-        self.step_frame_action.triggered.connect(self._step_current_frame)
+        self.step_frame_action.triggered.connect(self._step_gif_frame)
         self.scroll_area.viewport().installEventFilter(self)
         self.scroll_area.installEventFilter(self)
+        self._sync_action_states()
 
     def _setup_worker_thread(self) -> None:
         """永続的なワーカースレッドを1つだけ作成し、起動する"""
@@ -392,6 +393,30 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
 
+    def _sync_action_states(self) -> None:
+        """メニューの見た目を、実行できる操作と揃える。
+
+        読み込み中や画像が無いときに項目を押せても何も起きない、という状態を避ける。
+        各メソッド側のガードは残す。ショートカットは無効な ``QAction`` からは発火しない。
+        """
+        ready = not self.is_loading
+        has_image = ready and bool(self.image_files)
+        for action in (
+            self.move_ok_action,
+            self.move_ng_action,
+            self.delete_action,
+            self.next_action,
+            self.prev_action,
+            self.shuffle_action,
+            self.metadata_action,
+            self.fit_action,
+        ):
+            action.setEnabled(has_image)
+        movie = self.current_movie
+        has_movie = has_image and movie is not None and bool(movie.isValid())
+        self.play_pause_action.setEnabled(has_movie)
+        self.step_frame_action.setEnabled(has_movie)
+
     def _move_current_to_ok(self) -> None:
         self.move_current_image_and_load_next(OK_FOLDER)
 
@@ -407,9 +432,6 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         app = QApplication.instance()
         if app is not None:
             app.quit()
-
-    def _step_current_frame(self) -> None:
-        self._step_gif_frame(0)
 
     def _toggle_fullscreen(self) -> None:
         if getattr(self, "is_loading", False):

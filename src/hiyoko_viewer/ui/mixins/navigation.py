@@ -11,6 +11,7 @@ from PyQt6.QtCore import pyqtSlot
 from send2trash import send2trash
 
 from ...core.sorting import windows_logical_key
+from ..action_state import sync_action_states
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ class NavigationMixin:
             self.current_filesize = 0
         self.setWindowTitle(f"{self.windowTitle()} | 読み込み中...")
         self.statusBar().showMessage("読み込み中...")
+        # emit より先に無効化する。ワーカーが同期的に結果を返しても、完了側の更新が残る。
+        sync_action_states(self)
         self.request_load_image.emit(self._load_generation, file_path)
 
     def show_next_image(self) -> None:

@@ -18,6 +18,7 @@ def test_public_modules_import_cleanly() -> None:
         "hiyoko_viewer.ui.mixins.rendering",
         "hiyoko_viewer.ui.mixins.navigation",
         "hiyoko_viewer.ui.mixins.input",
+        "hiyoko_viewer.ui.action_state",
         "hiyoko_viewer.ui.dialogs.metadata_dialog",
         "hiyoko_viewer.ui.frame_progress",
         "hiyoko_viewer.services.image_loader",

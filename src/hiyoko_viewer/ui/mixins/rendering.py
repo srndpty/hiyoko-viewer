@@ -20,6 +20,7 @@ from ...config.constants import (
     ZOOM_IN_FACTOR,
     ZOOM_OUT_FACTOR,
 )
+from ..action_state import sync_action_states
 from ..apng_movie import ApngMovie, is_animated_png
 from ..frame_progress import set_frame_progress
 
@@ -108,6 +109,7 @@ class RenderingMixin:
             f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}"
         )
         self.is_loading = False
+        sync_action_states(self)
 
     @pyqtSlot(int)
     def on_gif_first_frame(self, frame_number: int) -> None:
@@ -192,6 +194,7 @@ class RenderingMixin:
             self.current_movie.stop()
             self.current_movie = None
         self.image_label.setMovie(None)
+        sync_action_states(self)
 
     def _redraw_gif(self) -> None:
         self.image_label.setScaledContents(True)
@@ -326,7 +329,7 @@ class RenderingMixin:
             return True
         return False
 
-    def _step_gif_frame(self, key: int) -> None:
+    def _step_gif_frame(self) -> None:
         if getattr(self, "is_loading", False):
             return
         if (
@@ -352,3 +355,4 @@ class RenderingMixin:
         self.statusBar().showMessage("")
         set_frame_progress(self, 0, 0)
         self.setWindowTitle(DEFAULT_TITLE)
+        sync_action_states(self)

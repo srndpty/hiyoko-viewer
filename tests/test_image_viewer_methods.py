@@ -449,7 +449,7 @@ def test_step_gif_frame_advances_and_pauses() -> None:
     viewer = SimpleNamespace(current_movie=movie)
     viewer.update_status_bar = lambda: calls.append("status")
 
-    ImageViewer._step_gif_frame(viewer, Qt.Key.Key_Period)
+    ImageViewer._step_gif_frame(viewer)
 
     assert movie.jumped_to == [2]
     assert movie.paused_values == [True]
