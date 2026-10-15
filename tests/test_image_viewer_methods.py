@@ -158,6 +158,29 @@ class _Emitter:
         self.emitted.append(args)
 
 
+class _FrameProgress:
+    def __init__(self) -> None:
+        self.values: list[tuple[int, int]] = []
+
+    def set_progress(self, current: int, total: int) -> None:
+        self.values.append((current, total))
+
+
+class _FrameLabel:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.visible: bool | None = None
+
+    def setText(self, text: str) -> None:
+        self.texts.append(text)
+
+    def clear(self) -> None:
+        self.texts.append("")
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
+
+
 class _StatusBar:
     def __init__(self) -> None:
         self.messages: list[tuple] = []
@@ -426,7 +449,7 @@ def test_step_gif_frame_advances_and_pauses() -> None:
     viewer = SimpleNamespace(current_movie=movie)
     viewer.update_status_bar = lambda: calls.append("status")
 
-    ImageViewer._step_gif_frame(viewer, Qt.Key.Key_Period)
+    ImageViewer._step_gif_frame(viewer)
 
     assert movie.jumped_to == [2]
     assert movie.paused_values == [True]
@@ -600,6 +623,8 @@ def test_delete_current_image_and_load_next_uses_send2trash(monkeypatch, tmp_pat
 
 def test_update_status_bar_shows_static_image_details() -> None:
     status_bar = _StatusBar()
+    frame_progress = _FrameProgress()
+    frame_label = _FrameLabel()
     viewer = SimpleNamespace(
         original_pixmap=_Pixmap(),
         current_filesize=1024 * 1024,
@@ -607,22 +632,29 @@ def test_update_status_bar_shows_static_image_details() -> None:
         scroll_area=_ScrollAreaWithViewport(),
         is_shuffled=False,
         current_movie=None,
+        frame_progress=frame_progress,
+        frame_label=frame_label,
     )
     viewer.statusBar = lambda: status_bar
 
     ImageViewer.update_status_bar(viewer)
 
     assert status_bar.messages == [("🖼️ 200x100  |  💾 1.00MB  |  ↕️ 200.0%", None)]
+    assert frame_progress.values == [(0, 0)]
+    assert frame_label.texts == [""]
+    assert frame_label.visible is False
 
 
 def test_update_status_bar_clears_message_without_pixmap() -> None:
     status_bar = _StatusBar()
-    viewer = SimpleNamespace(original_pixmap=_Pixmap(is_null=True))
+    frame_progress = _FrameProgress()
+    viewer = SimpleNamespace(original_pixmap=_Pixmap(is_null=True), frame_progress=frame_progress)
     viewer.statusBar = lambda: status_bar
 
     ImageViewer.update_status_bar(viewer)
 
     assert status_bar.cleared is True
+    assert frame_progress.values == [(0, 0)]
 
 
 def test_load_image_by_index_ignores_invalid_index() -> None:
@@ -779,6 +811,8 @@ def test_stop_movie_stops_and_clears_current_movie() -> None:
 
 def test_update_status_bar_includes_shuffle_and_movie_state() -> None:
     status_bar = _StatusBar()
+    frame_progress = _FrameProgress()
+    frame_label = _FrameLabel()
     viewer = SimpleNamespace(
         original_pixmap=_Pixmap(),
         current_filesize=512 * 1024,
@@ -786,14 +820,17 @@ def test_update_status_bar_includes_shuffle_and_movie_state() -> None:
         scale_factor=1.25,
         is_shuffled=True,
         current_movie=_Movie(QMovie.MovieState.Paused),
+        frame_progress=frame_progress,
+        frame_label=frame_label,
     )
     viewer.statusBar = lambda: status_bar
 
     ImageViewer.update_status_bar(viewer)
 
-    assert status_bar.messages == [
-        ("🖼️ 200x100  |  💾 0.50MB  |   125.0%  |  🔀  |  🎞️ [2/3] ⏸", None)
-    ]
+    assert status_bar.messages == [("🖼️ 200x100  |  💾 0.50MB  |   125.0%  |  🔀", None)]
+    assert frame_progress.values == [(2, 3)]
+    assert frame_label.texts == ["🎞️ [2/3] ⏸"]
+    assert frame_label.visible is True
 
 
 def test_handle_wheel_event_dispatches_zoom_or_scroll() -> None:
@@ -866,66 +903,25 @@ def test_mouse_handlers_return_false_for_unhandled_events() -> None:
     assert ImageViewer._handle_mouse_release_on_viewport(viewer, _MouseEvent()) is False
 
 
-def test_handle_key_press_on_scroll_area_dispatches_commands() -> None:
-    calls: list[tuple] = []
-    viewer = SimpleNamespace(is_loading=False)
-    viewer.move_current_image_and_load_next = lambda folder: calls.append(("move", folder))
-    viewer.show_next_image = lambda: calls.append(("next",))
-    viewer.show_prev_image = lambda: calls.append(("prev",))
-    viewer.delete_current_image_and_load_next = lambda: calls.append(("delete",))
-    viewer._step_gif_frame = lambda key: calls.append(("step", key))
+def test_handle_key_press_on_scroll_area_blocks_keys_only_while_loading() -> None:
+    loading = SimpleNamespace(is_loading=True)
+    idle = SimpleNamespace(is_loading=False)
 
-    events = [
-        _KeyEvent(Qt.Key.Key_7, Qt.KeyboardModifier.KeypadModifier),
-        _KeyEvent(Qt.Key.Key_9, Qt.KeyboardModifier.KeypadModifier),
-        _KeyEvent(Qt.Key.Key_Right),
-        _KeyEvent(Qt.Key.Key_Left),
-        _KeyEvent(Qt.Key.Key_Delete),
-        _KeyEvent(Qt.Key.Key_Period),
-    ]
-
-    assert [ImageViewer._handle_key_press_on_scroll_area(viewer, event) for event in events] == [
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-    ]
-    assert calls == [
-        ("move", "_ok"),
-        ("move", "_ng"),
-        ("next",),
-        ("prev",),
-        ("delete",),
-        ("step", Qt.Key.Key_Period),
-    ]
-    assert ImageViewer._handle_key_press_on_scroll_area(viewer, _KeyEvent(Qt.Key.Key_A)) is False
+    assert ImageViewer._handle_key_press_on_scroll_area(loading, _KeyEvent(Qt.Key.Key_Right))
+    assert ImageViewer._handle_key_press_on_scroll_area(idle, _KeyEvent(Qt.Key.Key_Right)) is False
+    assert ImageViewer._handle_key_press_on_scroll_area(idle, _KeyEvent(Qt.Key.Key_Delete)) is False
 
 
-def test_key_press_event_handles_window_shortcuts(monkeypatch) -> None:
+def test_key_press_event_arms_pan_mode_for_space(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(input_events, "QCursor", lambda shape: ("cursor", shape))
     viewer = SimpleNamespace(is_loading=False, space_key_pressed=False)
     viewer.setCursor = lambda cursor: calls.append("cursor")
-    viewer._toggle_fullscreen = lambda: calls.append("fullscreen")
-    viewer.close = lambda: calls.append("close")
-    viewer._toggle_fit_mode = lambda: calls.append("fit")
-    viewer._toggle_shuffle_mode = lambda: calls.append("shuffle")
-    viewer.show_metadata_dialog = lambda: calls.append("metadata")
 
-    for key in [
-        Qt.Key.Key_Space,
-        Qt.Key.Key_F11,
-        Qt.Key.Key_Escape,
-        Qt.Key.Key_F,
-        Qt.Key.Key_R,
-        Qt.Key.Key_I,
-    ]:
-        ImageViewer.keyPressEvent(viewer, _KeyEvent(key))
+    ImageViewer.keyPressEvent(viewer, _KeyEvent(Qt.Key.Key_Space))
 
     assert viewer.space_key_pressed is True
-    assert calls == ["cursor", "fullscreen", "close", "fit", "shuffle", "metadata"]
+    assert calls == ["cursor"]
 
 
 def test_key_press_event_ignores_while_loading() -> None:
@@ -1284,7 +1280,8 @@ def test_clear_display_resets_viewer_state(monkeypatch) -> None:
     label = _ImageLabel()
     titles: list[str] = []
     calls: list[str] = []
-    viewer = SimpleNamespace(image_label=label, is_loading=True)
+    frame_progress = _FrameProgress()
+    viewer = SimpleNamespace(image_label=label, is_loading=True, frame_progress=frame_progress)
     viewer.stop_movie = lambda: calls.append("stop")
     viewer.statusBar = lambda: status_bar
     viewer.setWindowTitle = titles.append
@@ -1299,6 +1296,7 @@ def test_clear_display_resets_viewer_state(monkeypatch) -> None:
     assert label.styles == [constants.NOTICE_TEXT_STYLE]
     assert viewer.current_index == -1
     assert status_bar.messages == [("", None)]
+    assert frame_progress.values == [(0, 0)]
     assert titles == [constants.DEFAULT_TITLE]
 
 
