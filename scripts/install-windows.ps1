@@ -153,15 +153,19 @@ function Clear-DirectoryContents {
 function Install-StartMenuShortcut {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$InstallDirectory
+        [string]$InstallDirectory,
+
+        # 既定は全ユーザーのスタートメニュー。検証時は一時フォルダを渡せる。
+        [string]$ProgramsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
     )
 
-    $programsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
-    $shortcutPath = Join-Path $programsDir "hiyoko-viewer.lnk"
+    $shortcutPath = Join-Path $ProgramsDirectory "hiyoko-viewer.lnk"
     $exePath = Join-Path $InstallDirectory "hiyoko-viewer.exe"
 
-    $shell = New-Object -ComObject WScript.Shell
+    $shell = $null
+    $shortcut = $null
     try {
+        $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $exePath
         $shortcut.WorkingDirectory = $InstallDirectory
@@ -169,7 +173,12 @@ function Install-StartMenuShortcut {
         $shortcut.Description = "hiyoko-viewer"
         $shortcut.Save()
     } finally {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+        if ($null -ne $shortcut) {
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut)
+        }
+        if ($null -ne $shell) {
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        }
     }
     Write-Host "Created Start Menu shortcut: $shortcutPath"
 }
