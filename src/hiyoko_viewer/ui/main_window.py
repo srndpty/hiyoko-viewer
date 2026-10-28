@@ -11,7 +11,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -37,6 +37,7 @@ from ..config.constants import (
 )
 from ..core.metadata import load_metadata_text
 from ..core.resources import resource_path
+from ..core.reveal import reveal_in_file_manager
 from ..services.image_loader import ImageLoader
 from .dialogs.metadata_dialog import MetadataDialog
 from .frame_progress import FrameProgressBar
@@ -183,6 +184,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         file_menu = menu.addMenu("ファイル(&F)")
         self.open_action = file_menu.addAction("開く(&O)...")
         self.open_action.setShortcut(QKeySequence("Ctrl+O"))
+        self.reveal_action = file_menu.addAction("エクスプローラーで表示(&E)")
         file_menu.addSeparator()
         self.move_ok_action = file_menu.addAction("_ok フォルダへ移動(&K)")
         self.move_ok_action.setShortcut(_numpad_sequence(Qt.Key.Key_7))
@@ -222,6 +224,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
     def _create_connections(self) -> None:
         """シグナルとスロット、イベントフィルターを接続する"""
         self.open_action.triggered.connect(self.open_image)
+        self.reveal_action.triggered.connect(self.reveal_current_image)
         self.move_ok_action.triggered.connect(self._move_current_to_ok)
         self.move_ng_action.triggered.connect(self._move_current_to_ng)
         self.delete_action.triggered.connect(self.delete_current_image_and_load_next)
@@ -402,6 +405,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         ready = not self.is_loading
         has_image = ready and bool(self.image_files)
         for action in (
+            self.reveal_action,
             self.move_ok_action,
             self.move_ng_action,
             self.delete_action,
@@ -416,6 +420,35 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         has_movie = has_image and movie is not None and bool(movie.isValid())
         self.play_pause_action.setEnabled(has_movie)
         self.step_frame_action.setEnabled(has_movie)
+
+    def _build_context_menu(self) -> QMenu:
+        """画像上の右クリックメニュー。メニューバーと同じ QAction を共有する。"""
+        menu = QMenu(self)
+        menu.addAction(self.reveal_action)
+        menu.addAction(self.metadata_action)
+        menu.addSeparator()
+        menu.addAction(self.move_ok_action)
+        menu.addAction(self.move_ng_action)
+        menu.addAction(self.delete_action)
+        return menu
+
+    def _show_context_menu(self, global_pos: QPoint) -> None:
+        if self.is_loading or not self.image_files:
+            return
+        menu = self._build_context_menu()
+        menu.exec(global_pos)
+        menu.deleteLater()
+
+    def reveal_current_image(self) -> None:
+        """表示中の画像をエクスプローラーで開き、そのファイルを選択状態にする。"""
+        if self.is_loading or not self.image_files or self.current_index < 0:
+            return
+        file_path = self.image_files[self.current_index]
+        try:
+            reveal_in_file_manager(file_path)
+        except OSError:
+            logger.exception("reveal failed: %s", file_path)
+            self.status_bar.showMessage("エクスプローラーで表示できませんでした", 3000)
 
     def _move_current_to_ok(self) -> None:
         self.move_current_image_and_load_next(OK_FOLDER)
