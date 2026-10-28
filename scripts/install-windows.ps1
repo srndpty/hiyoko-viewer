@@ -148,6 +148,41 @@ function Clear-DirectoryContents {
     }
 }
 
+# スタートメニュー検索（Win キー → "hiyoko"）に出すため、全ユーザーのスタートメニューへ
+# ショートカットを置く。インストール本体とは独立なので、失敗しても警告に留める。
+function Install-StartMenuShortcut {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDirectory,
+
+        # 既定は全ユーザーのスタートメニュー。検証時は一時フォルダを渡せる。
+        [string]$ProgramsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
+    )
+
+    $shortcutPath = Join-Path $ProgramsDirectory "hiyoko-viewer.lnk"
+    $exePath = Join-Path $InstallDirectory "hiyoko-viewer.exe"
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $exePath
+        $shortcut.WorkingDirectory = $InstallDirectory
+        $shortcut.IconLocation = "$exePath,0"
+        $shortcut.Description = "hiyoko-viewer"
+        $shortcut.Save()
+    } finally {
+        if ($null -ne $shortcut) {
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut)
+        }
+        if ($null -ne $shell) {
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        }
+    }
+    Write-Host "Created Start Menu shortcut: $shortcutPath"
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Source = Join-Path $RepoRoot "dist\hiyoko-viewer"
 $DestinationFullPath = ConvertTo-FullDirectoryPath $Destination
@@ -278,6 +313,12 @@ try {
         }
 
         Write-Host "Installed hiyoko-viewer to $DestinationFullPath"
+
+        try {
+            Install-StartMenuShortcut -InstallDirectory $DestinationFullPath
+        } catch {
+            Write-Warning "Failed to create Start Menu shortcut: $($_.Exception.Message)"
+        }
     } finally {
         Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
         if ($backupCreated -and -not $keepBackup) {

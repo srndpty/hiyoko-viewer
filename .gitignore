@@ -43,7 +43,6 @@ tmp/
 
 # ユーザー固有の設定やワークスペース履歴
 .vscode/*
-!.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json

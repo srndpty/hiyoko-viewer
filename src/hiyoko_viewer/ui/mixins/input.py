@@ -31,6 +31,11 @@ class InputEventMixin:
                 return self._handle_mouse_move_on_viewport(event)
             elif event_type == QEvent.Type.MouseButtonRelease:
                 return self._handle_mouse_release_on_viewport(event)
+            elif event_type == QEvent.Type.ContextMenu:
+                # QScrollArea はビューポートの右クリックを自身のポリシーで処理するため、
+                # customContextMenuRequested ではなくここで直接拾う
+                self._show_context_menu(event.globalPos())
+                return True
             elif event_type == QEvent.Type.MouseButtonDblClick:  # ダブルクリックしたら画像読み込み
                 # 何も読み込まれていない場合限定
                 if not self.image_files:

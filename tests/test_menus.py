@@ -73,6 +73,7 @@ def test_menu_bar_registers_commands_with_unique_mnemonics(viewer) -> None:
     expected = {
         "ファイル(&F)": [
             "開く(&O)...",
+            "エクスプローラーで表示(&E)",
             "_ok フォルダへ移動(&K)",
             "_ng フォルダへ移動(&N)",
             "ごみ箱へ移動(&D)",
@@ -406,3 +407,38 @@ def test_period_steps_one_frame_for_gif_webp_and_apng(viewer, tmp_path) -> None:
 
         assert movie.currentFrameNumber() == (start + 1) % movie.frameCount()
         assert movie.state() == QMovie.MovieState.Paused
+
+
+def test_reveal_action_opens_current_image(viewer, monkeypatch) -> None:
+    revealed: list[str] = []
+    monkeypatch.setattr(main_window, "reveal_in_file_manager", revealed.append)
+    viewer.is_loading = False
+    viewer.image_files = []
+    viewer._sync_action_states()
+    assert viewer.reveal_action.isEnabled() is False
+
+    _arm(viewer, ["a.png", "b.png"])
+    viewer.current_index = 1
+    assert viewer.reveal_action.isEnabled() is True
+    viewer.reveal_action.trigger()
+    assert revealed == ["b.png"]
+
+
+def test_context_menu_contains_reveal(viewer) -> None:
+    _arm(viewer, ["a.png"])
+    menu = viewer._build_context_menu()
+    assert viewer.reveal_action in menu.actions()
+    menu.deleteLater()
+
+
+def test_right_click_on_image_opens_context_menu(viewer, monkeypatch) -> None:
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QContextMenuEvent
+
+    shown: list[QPoint] = []
+    monkeypatch.setattr(viewer, "_show_context_menu", shown.append)
+    _arm(viewer, ["a.png"])
+    label = viewer.image_label
+    event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), QPoint(100, 200))
+    QApplication.sendEvent(label, event)
+    assert shown == [QPoint(100, 200)]
