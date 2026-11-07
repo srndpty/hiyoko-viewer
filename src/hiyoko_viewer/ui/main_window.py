@@ -37,7 +37,7 @@ from ..config.constants import (
     WELCOME_TEXT,
 )
 from ..core.metadata import load_metadata_text
-from ..core.metadata_strip import strip_unsupported_reason
+from ..core.metadata_strip import BackupCleanupError, strip_unsupported_reason
 from ..core.resources import resource_path
 from ..core.reveal import reveal_in_file_manager
 from ..services.image_loader import ImageLoader
@@ -133,6 +133,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.current_movie = None
         self._metadata_strip_task = None
         self._metadata_strip_dialog = None
+        self._quit_after_metadata_strip = False
         self.current_filesize = 0
         self.scale_factor = 1.0
         self.space_key_pressed = False
@@ -351,8 +352,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         tray_menu.addSeparator()
 
         quit_action = QAction("完全に終了", self)
-        # ここでは app.quit を直接呼ぶ
-        quit_action.triggered.connect(QApplication.instance().quit)
+        # メタデータ削除中の終了保留を効かせるため、_quit_application を経由する
+        quit_action.triggered.connect(self._quit_application)
         tray_menu.addAction(quit_action)
         logger.info("tray setup: menu built")
 
@@ -467,6 +468,11 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.close()
 
     def _quit_application(self) -> None:
+        # メタデータ削除中は、書き込みの途中で止めないよう終了を保留し、完了後に終了する
+        if getattr(self, "_metadata_strip_task", None) is not None:
+            self._quit_after_metadata_strip = True
+            self.statusBar().showMessage("メタデータの削除が終わり次第、終了します")
+            return
         app = QApplication.instance()
         if app is not None:
             app.quit()
@@ -521,7 +527,9 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             f"「{file_name}」のメタデータを削除して上書き保存します。\n\n"
             "削除: Exif（位置情報・撮影情報など）、XMP、IPTC、コメント、AI生成パラメータ、"
             "末尾の追加データ（モーションフォトの動画など）\n"
-            "残す: 画像の向き、カラープロファイル\n\n"
+            "残す: 画像の向き、カラープロファイル\n"
+            "※ 対象は画像ファイルの中身です。ファイル名やファイルシステム上の情報"
+            "（代替データストリームなど）は変更しません。\n\n"
             "この操作は元に戻せません。よろしいですか？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -538,16 +546,17 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
 
     def _start_metadata_strip_task(self, file_path: str) -> MetadataStripTask:
         task = MetadataStripTask(file_path, self)
-        # self (GUI スレッドのオブジェクト) のメソッドに繋ぐので、完了通知は GUI スレッドで処理される
+        # self (GUI スレッドのオブジェクト) のメソッドに繋ぐので、通知は GUI スレッドで処理される
         task.completed.connect(self._on_metadata_strip_completed)
-        task.finished.connect(task.deleteLater)
+        # completed の時点ではまだ run() を抜けていないことがあるので、参照の解放は finished で行う
+        task.finished.connect(self._on_metadata_strip_finished)
         task.start()
         return task
 
     def _on_metadata_strip_completed(self, changed: bool, error: object) -> None:
-        task = self._metadata_strip_task
-        dialog = self._metadata_strip_dialog
-        self._metadata_strip_task = None
+        """削除結果をダイアログ・表示に反映する（スレッドの後始末は finished 側）。"""
+        task = getattr(self, "_metadata_strip_task", None)
+        dialog = getattr(self, "_metadata_strip_dialog", None)
         self._metadata_strip_dialog = None
         if task is None:
             return
@@ -558,6 +567,14 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             dialog.set_busy(False)
         self._reload_if_current(file_path)
 
+        if isinstance(error, BackupCleanupError):
+            # ファイルは書き換わったが、元データを含むバックアップが残った
+            logger.error("バックアップを削除できません: %s", error.backup_path)
+            self.statusBar().showMessage(f"メタデータを削除しました（警告あり）: {file_name}", 5000)
+            if dialog is not None:
+                dialog.set_content(load_metadata_text(file_path))
+            QMessageBox.warning(dialog, "メタデータを削除", str(error))
+            return
         if isinstance(error, BaseException):
             logger.error("メタデータの削除に失敗: %s", file_path, exc_info=error)
             self.statusBar().clearMessage()
@@ -571,6 +588,16 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.statusBar().showMessage(f"メタデータを削除しました: {file_name}", 5000)
         if dialog is not None:
             dialog.set_content(load_metadata_text(file_path))
+
+    def _on_metadata_strip_finished(self) -> None:
+        """ワーカースレッドが実際に終了した。参照を解放し、保留中の終了要求があれば終了する。"""
+        task = getattr(self, "_metadata_strip_task", None)
+        self._metadata_strip_task = None
+        if task is not None:
+            task.deleteLater()
+        if getattr(self, "_quit_after_metadata_strip", False):
+            self._quit_after_metadata_strip = False
+            self._quit_application()
 
     def _reload_if_current(self, file_path: str) -> None:
         """表示中の画像なら読み込み直す（ファイルサイズ表示やアニメーションを復帰させる）。"""

@@ -458,3 +458,212 @@ def test_strip_metadata_allows_cloud_file_reparse_points(tmp_path, monkeypatch) 
     )
 
     assert strip_unsupported_reason(str(path)) is None
+
+
+# --------------------------------------------------------------------------
+# 表示に関わる情報の検証
+# --------------------------------------------------------------------------
+def test_strip_animation_keeps_durations_and_loop(tmp_path) -> None:
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text("parameters", "secret prompt")
+    path = tmp_path / "anim.png"
+    frames = [_gradient("RGBA", shift) for shift in (0, 60, 120)]
+    frames[0].save(
+        path,
+        save_all=True,
+        append_images=frames[1:],
+        pnginfo=pnginfo,
+        duration=[40, 80, 120],
+        loop=3,
+    )
+
+    assert strip_metadata(str(path)) is True
+
+    with Image.open(path) as image:
+        assert image.info.get("loop") == 3
+        durations = [frame.info.get("duration") for frame in ImageSequence.Iterator(image)]
+    assert durations == [40, 80, 120]
+
+
+def test_strip_metadata_refuses_when_duration_changes(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "anim.png"
+    frames = [_gradient("RGBA", shift) for shift in (0, 60)]
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text("parameters", "secret prompt")
+    frames[0].save(path, save_all=True, append_images=frames[1:], pnginfo=pnginfo, duration=50)
+    before = path.read_bytes()
+    other = io.BytesIO()
+    frames[0].save(other, "PNG", save_all=True, append_images=frames[1:], duration=999)
+    monkeypatch.setattr(metadata_strip, "_strip_png", lambda data: other.getvalue())
+
+    with pytest.raises(ValueError, match="表示時間"):
+        strip_metadata(str(path))
+    assert path.read_bytes() == before
+
+
+def test_strip_metadata_refuses_when_orientation_changes(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "a.jpg"
+    path.write_bytes(_jpeg(orientation=6))
+    before = path.read_bytes()
+    monkeypatch.setattr(metadata_strip, "_read_orientation", lambda data: None)
+
+    with pytest.raises(ValueError, match="画像の向き"):
+        strip_metadata(str(path))
+    assert path.read_bytes() == before
+
+
+# --------------------------------------------------------------------------
+# ReplaceFileW の失敗注入 (Windows の置き換え処理を OS に依存せず検証する)
+# --------------------------------------------------------------------------
+_real_replace = os.replace
+
+
+def _setup_replace(monkeypatch, tmp_path, fake) -> tuple:
+    path = tmp_path / "photo.jpg"
+    path.write_bytes(_jpeg())
+    original = path.read_bytes()
+    monkeypatch.setattr(metadata_strip, "_USE_REPLACE_FILE", True)
+    monkeypatch.setattr(metadata_strip, "_BACKUP_REMOVE_RETRY_DELAYS", ())
+    monkeypatch.setattr(metadata_strip, "_win_replace_file", fake)
+    return path, original
+
+
+def _leftovers(tmp_path) -> list[str]:
+    return sorted(p.name for p in tmp_path.iterdir() if p.name != "photo.jpg")
+
+
+def _fake_success(replaced: str, replacement: str, backup: str) -> int:
+    _real_replace(replaced, backup)
+    _real_replace(replacement, replaced)
+    return 0
+
+
+def test_replace_success_removes_backup(monkeypatch, tmp_path) -> None:
+    path, _original = _setup_replace(monkeypatch, tmp_path, _fake_success)
+
+    assert strip_metadata(str(path)) is True
+
+    assert b"secret comment" not in path.read_bytes()
+    assert _leftovers(tmp_path) == []
+
+
+@pytest.mark.parametrize("error_code", [1175, 1176])
+def test_replace_failure_with_original_in_place(monkeypatch, tmp_path, error_code) -> None:
+    path, original = _setup_replace(monkeypatch, tmp_path, lambda *a: error_code)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError, match="変更されていません"):
+        strip_metadata(str(path))
+
+    assert path.read_bytes() == original
+    assert _leftovers(tmp_path) == []
+
+
+def test_replace_failure_1177_restores_original(monkeypatch, tmp_path) -> None:
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        _real_replace(replaced, backup)  # 元ファイルはバックアップ名へ移動済み
+        return 1177
+
+    path, original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError, match="元の名前に戻しました"):
+        strip_metadata(str(path))
+
+    assert path.read_bytes() == original
+    assert _leftovers(tmp_path) == []
+
+
+def test_replace_failure_1177_keeps_files_when_restore_fails(monkeypatch, tmp_path) -> None:
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        _real_replace(replaced, backup)
+        return 1177
+
+    path, original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    def failing_replace(src, dst):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(metadata_strip.os, "replace", failing_replace)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError) as excinfo:
+        strip_metadata(str(path))
+
+    monkeypatch.undo()
+    leftovers = _leftovers(tmp_path)
+    backup = next(name for name in leftovers if name.endswith(".bak"))
+    temp = next(name for name in leftovers if name.endswith(".tmp"))
+    # 調査・手動復旧のため、元データと削除後データの両方を残し、パスを伝える
+    assert (tmp_path / backup).read_bytes() == original
+    assert backup in str(excinfo.value)
+    assert temp in str(excinfo.value)
+    assert not path.exists()
+
+
+def test_replace_failure_in_unexpected_state_keeps_everything(monkeypatch, tmp_path) -> None:
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        with open(replaced, "rb") as src, open(backup, "wb") as dst:
+            dst.write(src.read())  # 元ファイルもバックアップも存在する想定外の状態
+        return 1177
+
+    path, original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError, match="想定外"):
+        strip_metadata(str(path))
+
+    assert path.read_bytes() == original
+    assert len(_leftovers(tmp_path)) == 2
+
+
+def test_backup_cleanup_failure_is_reported(monkeypatch, tmp_path) -> None:
+    path, original = _setup_replace(monkeypatch, tmp_path, _fake_success)
+    real_remove = os.remove
+
+    def failing_remove(target):
+        if str(target).endswith(".bak"):
+            raise PermissionError("locked")
+        real_remove(target)
+
+    monkeypatch.setattr(metadata_strip.os, "remove", failing_remove)
+
+    with pytest.raises(metadata_strip.BackupCleanupError) as excinfo:
+        strip_metadata(str(path))
+
+    assert b"secret comment" not in path.read_bytes()
+    backup = tmp_path / os.path.basename(excinfo.value.backup_path)
+    assert backup.read_bytes() == original
+    assert str(backup) in str(excinfo.value) or backup.name in str(excinfo.value)
+
+
+def test_lost_update_during_replace_is_rolled_back(monkeypatch, tmp_path) -> None:
+    changed = _plain_png()
+
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        with open(replaced, "wb") as f:  # 置き換え直前に別プロセスが書き込んだ想定
+            f.write(changed)
+        return _fake_success(replaced, replacement, backup)
+
+    path, _original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    with pytest.raises(metadata_strip.FileChangedError):
+        strip_metadata(str(path))
+
+    assert path.read_bytes() == changed
+    assert _leftovers(tmp_path) == []
+
+
+def test_change_before_replace_is_detected(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "photo.jpg"
+    path.write_bytes(_jpeg())
+    changed = _plain_png()
+    real_verify = metadata_strip._verify_same_image
+
+    def verify_and_modify(original, stripped, fmt):
+        real_verify(original, stripped, fmt)
+        path.write_bytes(changed)  # 検証中に別プロセスが書き込んだ想定
+
+    monkeypatch.setattr(metadata_strip, "_verify_same_image", verify_and_modify)
+
+    with pytest.raises(metadata_strip.FileChangedError):
+        strip_metadata(str(path))
+
+    assert path.read_bytes() == changed
+    assert [p.name for p in tmp_path.iterdir()] == ["photo.jpg"]

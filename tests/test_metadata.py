@@ -258,6 +258,7 @@ def test_strip_metadata_with_confirmation_starts_background_task(monkeypatch) ->
     assert viewer.events[-1] == r"start:C:\images\a.jpg"
     assert dialog.busy_history == [True]
     assert viewer._metadata_strip_task.file_path == r"C:\images\a.jpg"
+    assert any("メタデータを削除中" in e for e in viewer.events)
     assert viewer._metadata_strip_dialog is dialog
 
 
@@ -293,8 +294,55 @@ def test_on_metadata_strip_completed_updates_dialog_and_reloads(monkeypatch) -> 
     assert dialog.content == r"after:C:\images\a.jpg"
     assert "reload" in viewer.events
     assert "メタデータを削除しました: a.jpg" in viewer.events
-    assert viewer._metadata_strip_task is None
+    # スレッドの参照は finished まで保持する（completed の時点ではまだ終了していないことがある）
+    assert viewer._metadata_strip_task is not None
     assert viewer._metadata_strip_dialog is None
+
+
+def test_on_metadata_strip_completed_warns_when_backup_remains(monkeypatch) -> None:
+    from hiyoko_viewer.core.metadata_strip import BackupCleanupError
+
+    viewer, dialog = _completed_viewer(r"C:\images\a.jpg")
+    warnings: list[str] = []
+    monkeypatch.setattr(main_window.QMessageBox, "warning", lambda parent, t, m: warnings.append(m))
+    monkeypatch.setattr(main_window, "load_metadata_text", lambda path: "after")
+    error = BackupCleanupError(r"C:\images\.hiyoko-strip-x.bak", PermissionError("locked"))
+
+    ImageViewer._on_metadata_strip_completed(viewer, True, error)
+
+    assert dialog.content == "after"
+    assert warnings and r"C:\images\.hiyoko-strip-x.bak" in warnings[0]
+
+
+def test_on_metadata_strip_finished_releases_task() -> None:
+    viewer, _dialog = _completed_viewer(r"C:\images\a.jpg")
+    deleted: list[str] = []
+    viewer._metadata_strip_task.deleteLater = lambda: deleted.append("deleted")
+
+    ImageViewer._on_metadata_strip_finished(viewer)
+
+    assert viewer._metadata_strip_task is None
+    assert deleted == ["deleted"]
+
+
+def test_quit_is_deferred_until_metadata_strip_finishes(monkeypatch) -> None:
+    viewer, _dialog = _completed_viewer(r"C:\images\a.jpg")
+    viewer._metadata_strip_task.deleteLater = lambda: None
+    quits: list[str] = []
+    monkeypatch.setattr(
+        main_window.QApplication,
+        "instance",
+        lambda: SimpleNamespace(quit=lambda: quits.append("quit")),
+    )
+    viewer._quit_application = lambda: ImageViewer._quit_application(viewer)
+
+    ImageViewer._quit_application(viewer)
+    assert quits == []
+    assert viewer._quit_after_metadata_strip is True
+
+    ImageViewer._on_metadata_strip_finished(viewer)
+    assert quits == ["quit"]
+    assert viewer._quit_after_metadata_strip is False
 
 
 def test_on_metadata_strip_completed_reports_nothing_to_remove() -> None:
@@ -344,3 +392,20 @@ def test_metadata_strip_task_runs_in_background(tmp_path) -> None:
 
     assert results == [(True, None)]
     assert b"secret" not in path.read_bytes()
+
+
+def test_metadata_strip_task_reports_backup_cleanup_as_changed(monkeypatch) -> None:
+    from hiyoko_viewer.core.metadata_strip import BackupCleanupError
+    from hiyoko_viewer.ui import metadata_strip_task
+
+    error = BackupCleanupError("backup.bak", PermissionError("locked"))
+    monkeypatch.setattr(
+        metadata_strip_task, "strip_metadata", lambda path: (_ for _ in ()).throw(error)
+    )
+    results: list[tuple] = []
+    task = metadata_strip_task.MetadataStripTask("a.jpg")
+    task.completed.connect(lambda changed, err: results.append((changed, err)))
+
+    task.run()
+
+    assert results == [(True, error)]

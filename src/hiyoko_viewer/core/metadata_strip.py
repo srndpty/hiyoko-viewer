@@ -11,20 +11,37 @@
 消すもの: 上記以外すべて。Exif (GPS・撮影情報・MakerNote 等)、XMP、IPTC、コメント、
 PNG のテキストチャンク (AI 生成パラメータ)、C2PA、JFIF / JFXX のサムネイル、
 JPEG 末尾の追加データ (モーションフォトの動画や HDR ゲインマップ等)、独自チャンクなど。
+
+対象は画像ファイルの中身だけ。ファイル名や、代替データストリーム (ADS)・ACL などの
+ファイルシステム上の情報は変更しない (ADS にも任意の情報を格納できる点に注意)。
+
+上書きの手順と、異常時に元データが残り得る場所:
+1. 同じフォルダの一時ファイル ``.hiyoko-strip-*.tmp`` に削除後の内容を書く
+   (中身は削除後のデータなので、残っても元のメタデータは含まない)。
+2. Windows では ReplaceFileW で置き換え、元ファイルをバックアップ ``.hiyoko-strip-*.bak``
+   に退避する。バックアップの中身が読み込んだ内容と一致するか確かめ (一致しなければ
+   処理中に他のプロセスが書き換えたとみなして元に戻す)、確認後に削除する。
+3. バックアップを削除できなかった場合は BackupCleanupError で必ず報告する。
+   ReplaceFileW の成功からバックアップ削除までの間にプロセスが異常終了した場合は、
+   元のメタデータを含む ``.hiyoko-strip-*.bak`` が残り得る (仕様上の制約)。
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import shutil
 import stat
 import struct
 import tempfile
+import time
 import zlib
 
 from PIL import Image, ImageSequence
+
+logger = logging.getLogger(__name__)
 
 _ORIENTATION_TAG = 0x0112
 
@@ -126,9 +143,16 @@ def _read_orientation(data: bytes) -> int | None:
     """
     try:
         with Image.open(io.BytesIO(data)) as image:
+            if image.format == "PNG":
+                # PNG は画像データより後ろに eXIf があると、読み込み後でないと見えない
+                image.load()
             orientation = image.getexif().get(_ORIENTATION_TAG)
     except Exception as e:
         raise ValueError(f"Exif を解析できないため、画像の向きを保持できません: {e}") from e
+    return _normalize_orientation(orientation)
+
+
+def _normalize_orientation(orientation: object) -> int | None:
     if isinstance(orientation, int) and 2 <= orientation <= 8:
         return orientation
     # 1 (そのまま) や範囲外の値は、一般的なビューアと同じく「回転なし」とみなす
@@ -337,49 +361,109 @@ def _strip_webp(data: bytes) -> bytes:
 # --------------------------------------------------------------------------
 # 検証・書き込み
 # --------------------------------------------------------------------------
-def _frame_digests(data: bytes, max_frames: int | None = None) -> list[tuple]:
-    """全フレームを実際にデコードし、各フレームのサイズ・モード・画素のハッシュを返す。"""
-    digests = []
+class FileChangedError(RuntimeError):
+    """処理中に元のファイルが他のプロセスによって変更された。元ファイルはそのまま。"""
+
+
+class ReplaceFailedError(OSError):
+    """ファイルの置き換えに失敗した。メッセージに状態と関連ファイルのパスを含む。"""
+
+
+class BackupCleanupError(RuntimeError):
+    """メタデータは削除できたが、元のデータを含むバックアップを削除できなかった。"""
+
+    def __init__(self, backup_path: str, cause: BaseException) -> None:
+        super().__init__(
+            "メタデータは削除しましたが、元のデータ（削除前のメタデータを含む）のバックアップを"
+            f"削除できませんでした。手動で削除してください:\n{backup_path}\n({cause})"
+        )
+        self.backup_path = backup_path
+
+
+_TEMP_PREFIX = ".hiyoko-strip-"
+
+# Windows では ReplaceFileW を使う (テストで差し替えられるようモジュール変数にしている)
+_USE_REPLACE_FILE = os.name == "nt"
+
+# バックアップ削除の再試行間隔 (秒)。ウイルス対策や同期ソフトが一時的に掴むことがあるため
+_BACKUP_REMOVE_RETRY_DELAYS = (0.1, 0.3, 1.0)
+
+
+def _image_signature(data: bytes, max_frames: int | None = None) -> dict:
+    """全フレームを実際にデコードし、表示結果に関わる情報をまとめる。
+
+    フレームごとのサイズ・モード・表示時間・画素のハッシュと、ループ回数・
+    ICC プロファイル・Orientation を含む。
+    """
+    frames = []
     with Image.open(io.BytesIO(data)) as image:
         for index, frame in enumerate(ImageSequence.Iterator(image)):
             if max_frames is not None and index >= max_frames:
                 break
             frame.load()
             pixels = hashlib.sha256(frame.tobytes()).hexdigest()
-            digests.append((frame.size, frame.mode, pixels))
-    return digests
+            frames.append((frame.size, frame.mode, frame.info.get("duration"), pixels))
+        image.seek(0)
+        return {
+            "frames": frames,
+            "loop": image.info.get("loop"),
+            "icc_profile": image.info.get("icc_profile") or None,
+            "orientation": _normalize_orientation(image.getexif().get(_ORIENTATION_TAG)),
+        }
 
 
-def _verify_same_pixels(original: bytes, stripped: bytes, fmt: str) -> None:
-    """削除後のデータを全フレームデコードし、元画像と画素が一致することを確かめる。"""
+_SIGNATURE_LABELS = {
+    "frames": "画素・フレーム構成・表示時間",
+    "loop": "ループ回数",
+    "icc_profile": "ICC カラープロファイル",
+    "orientation": "画像の向き",
+}
+
+
+def _verify_same_image(original: bytes, stripped: bytes, fmt: str) -> None:
+    """削除後のデータを全フレームデコードし、表示結果が元画像と一致することを確かめる。"""
     try:
-        after = _frame_digests(stripped)
+        after = _image_signature(stripped)
     except Exception as e:
         raise ValueError(f"削除後のデータを画像として読み込めませんでした: {e}") from e
 
     # JPEG の元画像は MPF で HDR ゲインマップ等を 2 フレーム目以降に持つことがあるが、
     # それは削除対象なので 1 フレーム目 (本体) だけを比べる
-    if fmt == "jpeg" and len(after) != 1:
+    if fmt == "jpeg" and len(after["frames"]) != 1:
         raise ValueError("削除後の JPEG に複数の画像が残っています")
     try:
-        before = _frame_digests(original, max_frames=len(after) if fmt == "jpeg" else None)
+        before = _image_signature(original, max_frames=1 if fmt == "jpeg" else None)
     except Exception as e:
         raise ValueError(f"元の画像を最後まで読み込めないため、安全に処理できません: {e}") from e
+    if fmt == "jpeg":
+        before["loop"] = after["loop"]  # MPO 由来の情報は比較しない
 
-    if before != after:
-        raise ValueError("削除後の画像が元の画像と一致しません")
+    for key, label in _SIGNATURE_LABELS.items():
+        if before[key] != after[key]:
+            raise ValueError(f"削除後の画像が元の画像と一致しません（{label}）")
 
 
-def _replace_file(temp_path: str, file_path: str) -> None:
-    """temp_path の内容で file_path を置き換える。
+def _file_identity(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
-    Windows では ReplaceFileW を使い、元ファイルの ACL・属性・作成日時・
-    代替データストリームを引き継ぐ。
-    """
-    if os.name != "nt":
-        os.replace(temp_path, file_path)
-        return
 
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _win_replace_file(replaced: str, replacement: str, backup: str) -> int:
+    """ReplaceFileW を呼ぶ。成功なら 0、失敗なら Win32 エラーコードを返す。"""
     import ctypes
     from ctypes import wintypes
 
@@ -394,22 +478,110 @@ def _replace_file(temp_path: str, file_path: str) -> None:
         wintypes.LPVOID,
     ]
     replace_file.restype = wintypes.BOOL
+    if replace_file(replaced, replacement, backup, 0, None, None):
+        return 0
+    return ctypes.get_last_error() or -1
 
-    # バックアップ名を指定しておくと、途中で失敗しても元ファイルを取り戻せる
-    backup_path = temp_path + ".bak"
-    if replace_file(file_path, temp_path, backup_path, 0, None, None):
+
+def _remove_backup(backup_path: str) -> None:
+    """元データを含むバックアップを削除する。消せなければ BackupCleanupError。"""
+    last_error: OSError | None = None
+    for delay in (0.0, *_BACKUP_REMOVE_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
         try:
             os.remove(backup_path)
-        except OSError:
-            pass
+            return
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            last_error = e
+    logger.error("バックアップを削除できません: %s (%s)", backup_path, last_error)
+    raise BackupCleanupError(backup_path, last_error)  # type: ignore[arg-type]
+
+
+def _recover_after_replace_failure(
+    file_path: str, temp_path: str, backup_path: str, error_code: int
+) -> ReplaceFailedError:
+    """ReplaceFileW の失敗後、エラーコードではなく実際のファイルの状態を見て復旧する。
+
+    元ファイルを確実に元の場所へ戻せた場合だけ一時ファイルを削除する。
+    復旧できない場合は調査・手動復旧のため関連ファイルを残し、パスをメッセージに含める。
+    """
+    logger.error(
+        "ReplaceFileW failed: code=%s file=%s temp=%s backup=%s",
+        error_code,
+        file_path,
+        temp_path,
+        backup_path,
+    )
+    detail = f"ファイルの置き換えに失敗しました (Win32 エラー {error_code})"
+    original_in_place = os.path.lexists(file_path)
+    backup_exists = os.path.lexists(backup_path)
+
+    if original_in_place and not backup_exists:
+        # 1175 / 1176 など: 元ファイルは手付かず。一時ファイル (削除後のデータ) だけ片付ける
+        _remove_quietly(temp_path)
+        return ReplaceFailedError(f"{detail}。元のファイルは変更されていません。")
+
+    if not original_in_place and backup_exists:
+        # 1177 など: 元ファイルがバックアップ名へ移動済み。元の名前に戻す
+        try:
+            os.replace(backup_path, file_path)
+        except OSError as e:
+            logger.error("元ファイルの復元に失敗: %s -> %s (%s)", backup_path, file_path, e)
+            return ReplaceFailedError(
+                f"{detail}。元のファイルを元の名前に戻せませんでした。\n"
+                f"元のファイル: {backup_path}\n削除後のデータ: {temp_path}"
+            )
+        _remove_quietly(temp_path)
+        return ReplaceFailedError(f"{detail}。元のファイルは元の名前に戻しました。")
+
+    # 想定外の状態。何も消さずに状況を報告する
+    return ReplaceFailedError(
+        f"{detail}。想定外の状態のため、関連ファイルを残しています。\n"
+        f"対象: {file_path} (存在: {original_in_place})\n"
+        f"バックアップ: {backup_path} (存在: {backup_exists})\n削除後のデータ: {temp_path}"
+    )
+
+
+def _replace_file(temp_path: str, file_path: str, expected_sha256: str) -> None:
+    """temp_path の内容で file_path を置き換える。
+
+    Windows では ReplaceFileW で元ファイルの ACL・属性・作成日時・代替データストリームを
+    引き継ぐ。置き換えた元ファイル (バックアップ) の中身が expected_sha256 と異なれば、
+    処理中に他のプロセスが書き換えたとみなして元に戻し、FileChangedError を送出する。
+    """
+    if not _USE_REPLACE_FILE:
+        os.replace(temp_path, file_path)
         return
 
-    error = ctypes.get_last_error()
-    error_unable_to_move_replacement_2 = 1177
-    if error == error_unable_to_move_replacement_2 and os.path.exists(backup_path):
-        # 元ファイルはバックアップ名に移動済み。元の名前に戻す
-        os.replace(backup_path, file_path)
-    raise ctypes.WinError(error)
+    backup_path = temp_path[: -len(".tmp")] + ".bak"
+    error_code = _win_replace_file(file_path, temp_path, backup_path)
+    if error_code:
+        raise _recover_after_replace_failure(file_path, temp_path, backup_path, error_code)
+
+    try:
+        backup_matches = _sha256_file(backup_path) == expected_sha256
+    except OSError as e:
+        logger.warning("バックアップを検証できません: %s (%s)", backup_path, e)
+        backup_matches = False
+    if not backup_matches:
+        # 置き換えたのは読み込んだ時点のファイルではない (または確認できない)。元に戻す
+        try:
+            os.replace(backup_path, file_path)
+        except OSError as e:
+            logger.error("元ファイルの復元に失敗: %s -> %s (%s)", backup_path, file_path, e)
+            raise ReplaceFailedError(
+                "処理中にファイルが変更された可能性があり、元に戻そうとしましたが失敗しました。\n"
+                f"元のファイル: {backup_path}"
+            ) from e
+        raise FileChangedError(
+            "処理中にファイルが他のプログラムによって変更されたため、元に戻しました。"
+            "もう一度お試しください。"
+        )
+
+    _remove_backup(backup_path)
 
 
 def strip_metadata_bytes(data: bytes) -> bytes:
@@ -428,35 +600,49 @@ def strip_metadata(file_path: str) -> bool:
     """ファイルのメタデータを削除して上書き保存する。
 
     変更がなければ書き込まず False を返す。置き換える前に全フレームをデコードして
-    元画像と画素が一致することを確かめ、同じフォルダの一時ファイルに書いてから
+    表示結果が元画像と一致することを確かめ、同じフォルダの一時ファイルに書いてから
     置き換えるため、途中で失敗しても元のファイルは壊れない。
     更新日時は元のファイルから引き継ぐ (更新日時順の並びを変えないため)。
+
+    読み込みから置き換えまでの間に他のプロセスがファイルを変更した場合は
+    FileChangedError を送出し、元のファイル (変更後の内容) を残す。
     """
     problem = _file_type_problem(file_path)
     if problem:
         raise UnsupportedFormatError(problem)
 
     with open(file_path, "rb") as f:
+        identity = _file_identity(os.fstat(f.fileno()))
         data = f.read()
+        if _file_identity(os.fstat(f.fileno())) != identity:
+            raise FileChangedError("読み込み中にファイルが変更されました。もう一度お試しください。")
     fmt = _detect_format(data[:12])
     stripped = strip_metadata_bytes(data)
     if stripped == data:
         return False
-    _verify_same_pixels(data, stripped, fmt or "")
+    _verify_same_image(data, stripped, fmt or "")
 
     directory = os.path.dirname(os.path.abspath(file_path))
-    fd, temp_path = tempfile.mkstemp(dir=directory, prefix=".hiyoko-", suffix=".tmp")
+    fd, temp_path = tempfile.mkstemp(dir=directory, prefix=_TEMP_PREFIX, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(stripped)
             f.flush()
             os.fsync(f.fileno())
         shutil.copystat(file_path, temp_path)
-        _replace_file(temp_path, file_path)
+
+        # 置き換え直前にもう一度、リンクへのすり替えや内容の変更がないか確かめる
+        problem = _file_type_problem(file_path)
+        if problem:
+            raise UnsupportedFormatError(problem)
+        if _file_identity(os.stat(file_path)) != identity:
+            raise FileChangedError(
+                "処理中にファイルが他のプログラムによって変更されました。もう一度お試しください。"
+            )
     except BaseException:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+        _remove_quietly(temp_path)
         raise
+
+    # 置き換え以降の後始末 (一時ファイル・バックアップ) は _replace_file が状態に応じて行う
+    _replace_file(temp_path, file_path, hashlib.sha256(data).hexdigest())
     return True
