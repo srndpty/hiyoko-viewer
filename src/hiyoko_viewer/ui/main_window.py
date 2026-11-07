@@ -589,6 +589,24 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         if dialog is not None:
             dialog.set_content(load_metadata_text(file_path))
 
+    def wait_for_metadata_strip_task(self, warn_interval_ms: int = 10000) -> None:
+        """実行中のメタデータ削除スレッドが終わるまで待つ（アプリ終了処理から呼ぶ）。
+
+        不変条件: MetadataStripTask の実行中は、その QThread と親 (self) を破棄しない。
+        実行中の QThread を破棄すると Qt がクラッシュし、削除処理も中途半端な状態で終わるため、
+        タイムアウトで打ち切らず、terminate もしない。warn_interval_ms は警告ログの間隔に過ぎない。
+
+        通常の終了操作は _quit_application が削除完了まで保留するので、ここで待つのは
+        OS のシャットダウンなど保留できない経路だけ。その場合に OS がプロセスを強制終了すると
+        削除処理の完了は保証できない（一時ファイルやバックアップが残り得る。
+        core/metadata_strip.py 冒頭の説明を参照）。
+        """
+        task = getattr(self, "_metadata_strip_task", None)
+        if task is None:
+            return
+        while not task.wait(warn_interval_ms):
+            logger.warning("still waiting for metadata strip task: %s", task.file_path)
+
     def _on_metadata_strip_finished(self) -> None:
         """ワーカースレッドが実際に終了した。参照を解放し、保留中の終了要求があれば終了する。"""
         task = getattr(self, "_metadata_strip_task", None)

@@ -667,3 +667,93 @@ def test_change_before_replace_is_detected(monkeypatch, tmp_path) -> None:
 
     assert path.read_bytes() == changed
     assert [p.name for p in tmp_path.iterdir()] == ["photo.jpg"]
+
+
+@pytest.mark.parametrize("bad_orientation", [0, 9])
+def test_strip_metadata_refuses_invalid_orientation(tmp_path, bad_orientation) -> None:
+    exif = Image.Exif()
+    exif[0x0112] = bad_orientation
+    path = tmp_path / "a.jpg"
+    _gradient().save(path, "JPEG", exif=exif)
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError, match="Orientation"):
+        strip_metadata(str(path))
+    assert path.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["a.jpg"]
+
+
+def test_normalize_orientation_accepts_missing_and_identity() -> None:
+    assert metadata_strip._normalize_orientation(None) is None
+    assert metadata_strip._normalize_orientation(1) is None
+    assert metadata_strip._normalize_orientation(6) == 6
+    for invalid in (True, 6.0, "6", (6, 6), 0, 9):
+        with pytest.raises(ValueError, match="Orientation"):
+            metadata_strip._normalize_orientation(invalid)
+
+
+def test_replace_failure_does_not_claim_unchanged_when_content_differs(
+    monkeypatch, tmp_path
+) -> None:
+    changed = _plain_png()
+
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        with open(replaced, "wb") as f:  # 失敗の裏で別プロセスが書き換えた想定
+            f.write(changed)
+        return 1175
+
+    path, _original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError) as excinfo:
+        strip_metadata(str(path))
+
+    message = str(excinfo.value)
+    assert "変更されていません" not in message
+    assert "異なります" in message
+    assert path.read_bytes() == changed
+    # 調査のため削除後のデータを残す
+    assert [name for name in _leftovers(tmp_path) if name.endswith(".tmp")]
+
+
+def test_replace_failure_1177_reports_changed_content_after_restore(monkeypatch, tmp_path) -> None:
+    changed = _plain_png()
+
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        _real_replace(replaced, backup)
+        with open(backup, "wb") as f:  # 退避されたファイルが別の内容だった想定
+            f.write(changed)
+        return 1177
+
+    path, _original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError) as excinfo:
+        strip_metadata(str(path))
+
+    assert "元の名前に戻しましたが" in str(excinfo.value)
+    assert path.read_bytes() == changed
+    assert [name for name in _leftovers(tmp_path) if name.endswith(".tmp")]
+
+
+def test_lost_update_rollback_failure_keeps_backup(monkeypatch, tmp_path) -> None:
+    changed = _plain_png()
+
+    def fake(replaced: str, replacement: str, backup: str) -> int:
+        with open(replaced, "wb") as f:
+            f.write(changed)
+        return _fake_success(replaced, replacement, backup)
+
+    path, _original = _setup_replace(monkeypatch, tmp_path, fake)
+
+    def failing_replace(src, dst):
+        if str(src).endswith(".bak"):
+            raise PermissionError("locked")
+        _real_replace(src, dst)
+
+    monkeypatch.setattr(metadata_strip.os, "replace", failing_replace)
+
+    with pytest.raises(metadata_strip.ReplaceFailedError, match="元に戻そうとしましたが失敗"):
+        strip_metadata(str(path))
+
+    monkeypatch.undo()
+    backup = next(name for name in _leftovers(tmp_path) if name.endswith(".bak"))
+    assert (tmp_path / backup).read_bytes() == changed

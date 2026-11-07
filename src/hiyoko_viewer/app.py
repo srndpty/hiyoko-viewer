@@ -456,15 +456,8 @@ def main() -> int:
         viewer._save_settings()
         viewer.stop_movie()
 
-        # 通常の終了操作は _quit_application が削除完了まで保留するので、ここに来るのは
-        # OS のシャットダウンなど保留できない経路だけ。置き換えの途中で止めないよう
-        # terminate はせず、上限付きで待つ（待ち切れなくても GUI が終了不能にならないように）
-        strip_task = getattr(viewer, "_metadata_strip_task", None)
-        if strip_task is not None and not strip_task.wait(10000):
-            logger.warning(
-                "metadata strip task did not finish in time; exiting without terminate: %s",
-                strip_task.file_path,
-            )
+        # メタデータ削除中なら、スレッドが終わるまで待つ（タイムアウトで打ち切らない）
+        viewer.wait_for_metadata_strip_task()
 
         viewer.worker_thread.quit()
         # 画像ロード中などで終わらない場合に GUI が終了不能になるのを避けるためタイムアウトを付ける

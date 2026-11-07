@@ -409,3 +409,28 @@ def test_metadata_strip_task_reports_backup_cleanup_as_changed(monkeypatch) -> N
     task.run()
 
     assert results == [(True, error)]
+
+
+def test_wait_for_metadata_strip_task_never_gives_up(monkeypatch) -> None:
+    results = iter([False, False, True])
+    waits: list[int] = []
+
+    def wait(ms: int) -> bool:
+        waits.append(ms)
+        return next(results)
+
+    task = SimpleNamespace(
+        file_path="a.jpg",
+        wait=wait,
+        terminate=lambda: (_ for _ in ()).throw(AssertionError("must not terminate")),
+    )
+    viewer = SimpleNamespace(_metadata_strip_task=task)
+
+    ImageViewer.wait_for_metadata_strip_task(viewer, warn_interval_ms=5)
+
+    # タイムアウトしても打ち切らず、スレッドが終わるまで待ち続ける
+    assert waits == [5, 5, 5]
+
+
+def test_wait_for_metadata_strip_task_without_task() -> None:
+    ImageViewer.wait_for_metadata_strip_task(SimpleNamespace(_metadata_strip_task=None))

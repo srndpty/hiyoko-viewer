@@ -153,10 +153,18 @@ def _read_orientation(data: bytes) -> int | None:
 
 
 def _normalize_orientation(orientation: object) -> int | None:
-    if isinstance(orientation, int) and 2 <= orientation <= 8:
+    """Orientation を「回転なし (None)」か 2〜8 に正規化する。
+
+    無い・1 は回転なし。それ以外の値や型は、ビューアによって解釈が分かれ表示状態を
+    保証できないため、処理を断る。
+    """
+    if orientation is None or (type(orientation) is int and orientation == 1):
+        return None
+    if type(orientation) is int and 2 <= orientation <= 8:
         return orientation
-    # 1 (そのまま) や範囲外の値は、一般的なビューアと同じく「回転なし」とみなす
-    return None
+    raise ValueError(
+        f"Exif の Orientation が不正な値 ({orientation!r}) のため、" "画像の向きを保持できません"
+    )
 
 
 def _orientation_only_tiff(orientation: int) -> bytes:
@@ -500,13 +508,21 @@ def _remove_backup(backup_path: str) -> None:
     raise BackupCleanupError(backup_path, last_error)  # type: ignore[arg-type]
 
 
+def _sha256_or_none(path: str) -> str | None:
+    try:
+        return _sha256_file(path)
+    except OSError:
+        return None
+
+
 def _recover_after_replace_failure(
-    file_path: str, temp_path: str, backup_path: str, error_code: int
+    file_path: str, temp_path: str, backup_path: str, error_code: int, expected_sha256: str
 ) -> ReplaceFailedError:
     """ReplaceFileW の失敗後、エラーコードではなく実際のファイルの状態を見て復旧する。
 
-    元ファイルを確実に元の場所へ戻せた場合だけ一時ファイルを削除する。
-    復旧できない場合は調査・手動復旧のため関連ファイルを残し、パスをメッセージに含める。
+    元の場所のファイルが読み込み時と同じ内容 (expected_sha256) だと確認できた場合だけ
+    一時ファイルを削除し「変更されていません」と報告する。確認できない場合は
+    調査・手動復旧のため関連ファイルを残し、パスをメッセージに含める。
     """
     logger.error(
         "ReplaceFileW failed: code=%s file=%s temp=%s backup=%s",
@@ -516,13 +532,19 @@ def _recover_after_replace_failure(
         backup_path,
     )
     detail = f"ファイルの置き換えに失敗しました (Win32 エラー {error_code})"
+    keep_note = f"\n対象: {file_path}\n削除後のデータ: {temp_path}"
     original_in_place = os.path.lexists(file_path)
     backup_exists = os.path.lexists(backup_path)
 
     if original_in_place and not backup_exists:
-        # 1175 / 1176 など: 元ファイルは手付かず。一時ファイル (削除後のデータ) だけ片付ける
-        _remove_quietly(temp_path)
-        return ReplaceFailedError(f"{detail}。元のファイルは変更されていません。")
+        # 1175 / 1176 など: 元ファイルは元の場所にあるはず。中身まで確かめる
+        if _sha256_or_none(file_path) == expected_sha256:
+            _remove_quietly(temp_path)
+            return ReplaceFailedError(f"{detail}。元のファイルは変更されていません。")
+        return ReplaceFailedError(
+            f"{detail}。元の場所のファイルが読み込み時と異なります"
+            f"（他のプログラムによる変更の可能性）。関連ファイルを残しています。{keep_note}"
+        )
 
     if not original_in_place and backup_exists:
         # 1177 など: 元ファイルがバックアップ名へ移動済み。元の名前に戻す
@@ -534,8 +556,14 @@ def _recover_after_replace_failure(
                 f"{detail}。元のファイルを元の名前に戻せませんでした。\n"
                 f"元のファイル: {backup_path}\n削除後のデータ: {temp_path}"
             )
-        _remove_quietly(temp_path)
-        return ReplaceFailedError(f"{detail}。元のファイルは元の名前に戻しました。")
+        if _sha256_or_none(file_path) == expected_sha256:
+            _remove_quietly(temp_path)
+            return ReplaceFailedError(f"{detail}。元のファイルは元の名前に戻しました。")
+        return ReplaceFailedError(
+            f"{detail}。退避されていたファイルを元の名前に戻しましたが、内容が読み込み時と"
+            f"異なります（他のプログラムによる変更の可能性）。関連ファイルを残しています。"
+            f"{keep_note}"
+        )
 
     # 想定外の状態。何も消さずに状況を報告する
     return ReplaceFailedError(
@@ -559,7 +587,9 @@ def _replace_file(temp_path: str, file_path: str, expected_sha256: str) -> None:
     backup_path = temp_path[: -len(".tmp")] + ".bak"
     error_code = _win_replace_file(file_path, temp_path, backup_path)
     if error_code:
-        raise _recover_after_replace_failure(file_path, temp_path, backup_path, error_code)
+        raise _recover_after_replace_failure(
+            file_path, temp_path, backup_path, error_code, expected_sha256
+        )
 
     try:
         backup_matches = _sha256_file(backup_path) == expected_sha256
