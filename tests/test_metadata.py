@@ -194,61 +194,153 @@ def test_show_metadata_dialog_returns_without_images(monkeypatch) -> None:
     ImageViewer.show_metadata_dialog(viewer)
 
 
+class _FakeStripDialog:
+    def __init__(self) -> None:
+        self.busy_history: list[bool] = []
+        self.content: str | None = None
+
+    def set_busy(self, busy: bool) -> None:
+        self.busy_history.append(busy)
+
+    def set_content(self, content: str) -> None:
+        self.content = content
+
+
 def _strip_viewer(file_path: str) -> SimpleNamespace:
     events: list[str] = []
     viewer = SimpleNamespace(
         image_files=[file_path],
         current_index=0,
         events=events,
+        _metadata_strip_task=None,
+        _metadata_strip_dialog=None,
         _release_current_file_handles=lambda: events.append("release"),
         load_image_by_index=lambda: events.append("reload"),
-        statusBar=lambda: SimpleNamespace(showMessage=lambda msg, ms: events.append(msg)),
+        statusBar=lambda: SimpleNamespace(
+            showMessage=lambda msg, ms=0: events.append(msg),
+            clearMessage=lambda: events.append("clear"),
+        ),
     )
     viewer._reload_if_current = lambda path: ImageViewer._reload_if_current(viewer, path)
+
+    def start_task(path: str) -> SimpleNamespace:
+        events.append(f"start:{path}")
+        return SimpleNamespace(file_path=path)
+
+    viewer._start_metadata_strip_task = start_task
     return viewer
+
+
+def _answer(monkeypatch, button) -> None:
+    monkeypatch.setattr(main_window.QMessageBox, "question", lambda *a: button)
 
 
 def test_strip_metadata_with_confirmation_does_nothing_when_cancelled(monkeypatch) -> None:
     viewer = _strip_viewer(r"C:\images\a.jpg")
+    dialog = _FakeStripDialog()
+    _answer(monkeypatch, main_window.QMessageBox.StandardButton.No)
+
+    ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", dialog)
+
+    assert viewer.events == []
+    assert dialog.busy_history == []
+    assert viewer._metadata_strip_task is None
+
+
+def test_strip_metadata_with_confirmation_starts_background_task(monkeypatch) -> None:
+    viewer = _strip_viewer(r"C:\images\a.jpg")
+    dialog = _FakeStripDialog()
+    _answer(monkeypatch, main_window.QMessageBox.StandardButton.Yes)
+
+    ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", dialog)
+
+    assert viewer.events[0] == "release"
+    assert viewer.events[-1] == r"start:C:\images\a.jpg"
+    assert dialog.busy_history == [True]
+    assert viewer._metadata_strip_task.file_path == r"C:\images\a.jpg"
+    assert viewer._metadata_strip_dialog is dialog
+
+
+def test_strip_metadata_with_confirmation_ignores_request_while_running(monkeypatch) -> None:
+    viewer = _strip_viewer(r"C:\images\a.jpg")
+    viewer._metadata_strip_task = SimpleNamespace(file_path=r"C:\images\a.jpg")
     monkeypatch.setattr(
-        main_window.QMessageBox, "question", lambda *a: main_window.QMessageBox.StandardButton.No
-    )
-    monkeypatch.setattr(
-        main_window, "strip_metadata", lambda path: (_ for _ in ()).throw(AssertionError())
+        main_window.QMessageBox,
+        "question",
+        lambda *a: (_ for _ in ()).throw(AssertionError("should not ask")),
     )
 
-    assert ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", None) is None
+    ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", _FakeStripDialog())
+
     assert viewer.events == []
 
 
-def test_strip_metadata_with_confirmation_strips_and_reloads(monkeypatch) -> None:
-    viewer = _strip_viewer(r"C:\images\a.jpg")
-    stripped: list[str] = []
-    monkeypatch.setattr(
-        main_window.QMessageBox, "question", lambda *a: main_window.QMessageBox.StandardButton.Yes
-    )
-    monkeypatch.setattr(main_window, "strip_metadata", lambda path: stripped.append(path) or True)
+def _completed_viewer(file_path: str) -> tuple[SimpleNamespace, _FakeStripDialog]:
+    viewer = _strip_viewer(file_path)
+    dialog = _FakeStripDialog()
+    viewer._metadata_strip_task = SimpleNamespace(file_path=file_path)
+    viewer._metadata_strip_dialog = dialog
+    return viewer, dialog
+
+
+def test_on_metadata_strip_completed_updates_dialog_and_reloads(monkeypatch) -> None:
+    viewer, dialog = _completed_viewer(r"C:\images\a.jpg")
     monkeypatch.setattr(main_window, "load_metadata_text", lambda path: f"after:{path}")
 
-    result = ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", None)
+    ImageViewer._on_metadata_strip_completed(viewer, True, None)
 
-    assert result == r"after:C:\images\a.jpg"
-    assert stripped == [r"C:\images\a.jpg"]
-    assert viewer.events[:2] == ["release", "reload"]
+    assert dialog.busy_history == [False]
+    assert dialog.content == r"after:C:\images\a.jpg"
+    assert "reload" in viewer.events
     assert "メタデータを削除しました: a.jpg" in viewer.events
+    assert viewer._metadata_strip_task is None
+    assert viewer._metadata_strip_dialog is None
 
 
-def test_strip_metadata_with_confirmation_reports_failure(monkeypatch) -> None:
-    viewer = _strip_viewer(r"C:\images\a.jpg")
+def test_on_metadata_strip_completed_reports_nothing_to_remove() -> None:
+    viewer, dialog = _completed_viewer(r"C:\images\a.jpg")
+
+    ImageViewer._on_metadata_strip_completed(viewer, False, None)
+
+    assert dialog.content is None
+    assert "削除するメタデータはありませんでした" in viewer.events
+
+
+def test_on_metadata_strip_completed_reports_failure(monkeypatch) -> None:
+    viewer, dialog = _completed_viewer(r"C:\images\a.jpg")
     warnings: list[str] = []
-    monkeypatch.setattr(
-        main_window.QMessageBox, "question", lambda *a: main_window.QMessageBox.StandardButton.Yes
-    )
     monkeypatch.setattr(main_window.QMessageBox, "warning", lambda parent, t, m: warnings.append(m))
-    monkeypatch.setattr(
-        main_window, "strip_metadata", lambda path: (_ for _ in ()).throw(PermissionError("locked"))
-    )
 
-    assert ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", None) is None
+    ImageViewer._on_metadata_strip_completed(viewer, False, PermissionError("locked"))
+
     assert warnings and "locked" in warnings[0]
-    assert viewer.events == ["release", "reload"]
+    assert dialog.busy_history == [False]
+    assert dialog.content is None
+    assert "reload" in viewer.events
+
+
+def test_metadata_strip_task_runs_in_background(tmp_path) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    from hiyoko_viewer.ui.metadata_strip_task import MetadataStripTask
+
+    app = QApplication.instance() or QApplication([])
+    path = tmp_path / "a.png"
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    info.add_text("parameters", "secret")
+    Image.new("RGB", (2, 2)).save(path, pnginfo=info)
+
+    results: list[tuple] = []
+    task = MetadataStripTask(str(path))
+    task.completed.connect(lambda changed, error: results.append((changed, error)))
+    task.start()
+    assert task.wait(10000)
+    app.processEvents()
+
+    assert results == [(True, None)]
+    assert b"secret" not in path.read_bytes()

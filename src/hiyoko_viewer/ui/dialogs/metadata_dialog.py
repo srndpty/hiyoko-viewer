@@ -3,8 +3,15 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from PyQt6.QtCore import QObject
-from PyQt6.QtGui import QColor, QFont, QFontDatabase, QSyntaxHighlighter, QTextCharFormat
+from PyQt6.QtCore import QObject, Qt
+from PyQt6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFont,
+    QFontDatabase,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+)
 from PyQt6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QTextEdit, QVBoxLayout, QWidget
 
 
@@ -65,14 +72,16 @@ class MetadataDialog(QDialog):
         title: str,
         content: str,
         parent: QWidget | None = None,
-        strip_handler: Callable[[], str | None] | None = None,
-        can_strip: bool = True,
+        strip_handler: Callable[[], None] | None = None,
+        strip_disabled_reason: str | None = None,
     ) -> None:
-        """strip_handler はメタデータ削除を実行し、成功時は再読込したメタデータ文字列を返す。
-        キャンセルや失敗時は None を返す。None を渡すと削除ボタンを表示しない。
+        """strip_handler は「メタデータを削除」ボタンで呼ばれる。処理はバックグラウンドで行い、
+        呼び出し側が set_busy() / set_content() でダイアログを更新する。
+        None を渡すと削除ボタンを表示しない。strip_disabled_reason を渡すとボタンを無効にする。
         """
         super().__init__(parent)
         self._strip_handler = strip_handler
+        self._busy = False
 
         self.setWindowTitle(title)
         self.content_text = content  # コピー機能のためにコンテンツを保持
@@ -111,12 +120,11 @@ class MetadataDialog(QDialog):
             self.strip_button = button_box.addButton(
                 "メタデータを削除", QDialogButtonBox.ButtonRole.ActionRole
             )
-            self.strip_button.setEnabled(can_strip)
-            if not can_strip:
-                self.strip_button.setToolTip(
-                    "メタデータの削除は JPEG / PNG / WebP のみ対応しています"
-                )
+            if strip_disabled_reason:
+                self.strip_button.setEnabled(False)
+                self.strip_button.setToolTip(strip_disabled_reason)
             self.strip_button.clicked.connect(self.strip_metadata)
+        self.button_box = button_box
 
         # UI要素をレイアウトに追加
         layout.addWidget(self.text_edit)
@@ -134,11 +142,33 @@ class MetadataDialog(QDialog):
         self.text_edit.setPlainText(content)
 
     def strip_metadata(self) -> None:
-        if self._strip_handler is None:
+        if self._strip_handler is None or self._busy:
             return
-        new_content = self._strip_handler()
-        if new_content is not None:
-            self.set_content(new_content)
+        self._strip_handler()
+
+    def is_busy(self) -> bool:
+        return self._busy
+
+    def set_busy(self, busy: bool) -> None:
+        """削除処理中はボタンを無効にし、ダイアログを閉じられないようにする。"""
+        self._busy = busy
+        self.button_box.setEnabled(not busy)
+        if busy:
+            self.setCursor(Qt.CursorShape.WaitCursor)
+        else:
+            self.unsetCursor()
+
+    def reject(self) -> None:
+        # 処理中に Esc や × で閉じると、完了時の更新先が無くなるため無視する
+        if self._busy:
+            return
+        super().reject()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._busy:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def copy_to_clipboard(self) -> None:
         """テキストエリアの内容をクリップボードにコピーする"""

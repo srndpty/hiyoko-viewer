@@ -37,12 +37,13 @@ from ..config.constants import (
     WELCOME_TEXT,
 )
 from ..core.metadata import load_metadata_text
-from ..core.metadata_strip import can_strip_metadata, strip_metadata
+from ..core.metadata_strip import strip_unsupported_reason
 from ..core.resources import resource_path
 from ..core.reveal import reveal_in_file_manager
 from ..services.image_loader import ImageLoader
 from .dialogs.metadata_dialog import MetadataDialog
 from .frame_progress import FrameProgressBar
+from .metadata_strip_task import MetadataStripTask
 from .mixins.input import InputEventMixin
 from .mixins.navigation import NavigationMixin
 from .mixins.rendering import RenderingMixin
@@ -130,6 +131,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.original_pixmap = QPixmap()
         self.svg_renderer = None
         self.current_movie = None
+        self._metadata_strip_task = None
+        self._metadata_strip_dialog = None
         self.current_filesize = 0
         self.scale_factor = 1.0
         self.space_key_pressed = False
@@ -500,18 +503,20 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             content=final_text,
             parent=self,
             strip_handler=lambda: self._strip_metadata_with_confirmation(file_path, dialog),
-            can_strip=can_strip_metadata(file_path),
+            strip_disabled_reason=strip_unsupported_reason(file_path),
         )
         dialog.exec()
 
-    def _strip_metadata_with_confirmation(self, file_path: str, parent) -> str | None:
-        """確認のうえメタデータを削除して上書き保存し、再読込したメタデータ文字列を返す。
+    def _strip_metadata_with_confirmation(self, file_path: str, dialog) -> None:
+        """確認のうえ、メタデータの削除 (上書き保存) をバックグラウンドで開始する。
 
-        キャンセル・失敗・変更なしのときは None を返す。
+        完了すると _on_metadata_strip_completed() でダイアログと表示を更新する。
         """
+        if getattr(self, "_metadata_strip_task", None) is not None:
+            return
         file_name = os.path.basename(file_path)
         answer = QMessageBox.question(
-            parent,
+            dialog,
             "メタデータを削除",
             f"「{file_name}」のメタデータを削除して上書き保存します。\n\n"
             "削除: Exif（位置情報・撮影情報など）、XMP、IPTC、コメント、AI生成パラメータ、"
@@ -522,24 +527,50 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            return None
+            return
 
         # アニメーション表示中は QMovie 等がファイルを掴んでいて置き換えに失敗するため、先に解放する
         self._release_current_file_handles()
-        try:
-            changed = strip_metadata(file_path)
-        except Exception as e:
-            logger.exception("メタデータの削除に失敗: %s", file_path)
-            QMessageBox.warning(parent, "メタデータを削除", f"メタデータの削除に失敗しました:\n{e}")
-            self._reload_if_current(file_path)
-            return None
+        dialog.set_busy(True)
+        self.statusBar().showMessage(f"メタデータを削除中: {file_name}")
+        self._metadata_strip_dialog = dialog
+        self._metadata_strip_task = self._start_metadata_strip_task(file_path)
 
+    def _start_metadata_strip_task(self, file_path: str) -> MetadataStripTask:
+        task = MetadataStripTask(file_path, self)
+        # self (GUI スレッドのオブジェクト) のメソッドに繋ぐので、完了通知は GUI スレッドで処理される
+        task.completed.connect(self._on_metadata_strip_completed)
+        task.finished.connect(task.deleteLater)
+        task.start()
+        return task
+
+    def _on_metadata_strip_completed(self, changed: bool, error: object) -> None:
+        task = self._metadata_strip_task
+        dialog = self._metadata_strip_dialog
+        self._metadata_strip_task = None
+        self._metadata_strip_dialog = None
+        if task is None:
+            return
+        file_path = task.file_path
+        file_name = os.path.basename(file_path)
+
+        if dialog is not None:
+            dialog.set_busy(False)
         self._reload_if_current(file_path)
+
+        if isinstance(error, BaseException):
+            logger.error("メタデータの削除に失敗: %s", file_path, exc_info=error)
+            self.statusBar().clearMessage()
+            QMessageBox.warning(
+                dialog, "メタデータを削除", f"メタデータの削除に失敗しました:\n{error}"
+            )
+            return
         if not changed:
             self.statusBar().showMessage("削除するメタデータはありませんでした", 5000)
-            return None
+            return
         self.statusBar().showMessage(f"メタデータを削除しました: {file_name}", 5000)
-        return load_metadata_text(file_path)
+        if dialog is not None:
+            dialog.set_content(load_metadata_text(file_path))
 
     def _reload_if_current(self, file_path: str) -> None:
         """表示中の画像なら読み込み直す（ファイルサイズ表示やアニメーションを復帰させる）。"""
