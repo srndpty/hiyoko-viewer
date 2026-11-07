@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from PyQt6.QtCore import QObject
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QSyntaxHighlighter, QTextCharFormat
@@ -59,8 +60,19 @@ class JsonHighlighter(QSyntaxHighlighter):
 class MetadataDialog(QDialog):
     """メタデータを表示するためのカスタムダイアログ"""
 
-    def __init__(self, title: str, content: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        content: str,
+        parent: QWidget | None = None,
+        strip_handler: Callable[[], str | None] | None = None,
+        can_strip: bool = True,
+    ) -> None:
+        """strip_handler はメタデータ削除を実行し、成功時は再読込したメタデータ文字列を返す。
+        キャンセルや失敗時は None を返す。None を渡すと削除ボタンを表示しない。
+        """
         super().__init__(parent)
+        self._strip_handler = strip_handler
 
         self.setWindowTitle(title)
         self.content_text = content  # コピー機能のためにコンテンツを保持
@@ -94,6 +106,17 @@ class MetadataDialog(QDialog):
         # ボタン
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         copy_button = button_box.addButton("すべてコピー", QDialogButtonBox.ButtonRole.ActionRole)
+        self.strip_button = None
+        if strip_handler is not None:
+            self.strip_button = button_box.addButton(
+                "メタデータを削除", QDialogButtonBox.ButtonRole.ActionRole
+            )
+            self.strip_button.setEnabled(can_strip)
+            if not can_strip:
+                self.strip_button.setToolTip(
+                    "メタデータの削除は JPEG / PNG / WebP のみ対応しています"
+                )
+            self.strip_button.clicked.connect(self.strip_metadata)
 
         # UI要素をレイアウトに追加
         layout.addWidget(self.text_edit)
@@ -105,6 +128,17 @@ class MetadataDialog(QDialog):
 
         # ダイアログの初期サイズを設定
         self.resize(700, 600)
+
+    def set_content(self, content: str) -> None:
+        self.content_text = content
+        self.text_edit.setPlainText(content)
+
+    def strip_metadata(self) -> None:
+        if self._strip_handler is None:
+            return
+        new_content = self._strip_handler()
+        if new_content is not None:
+            self.set_content(new_content)
 
     def copy_to_clipboard(self) -> None:
         """テキストエリアの内容をクリップボードにコピーする"""

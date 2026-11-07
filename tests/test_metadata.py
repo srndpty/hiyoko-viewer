@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from PIL import Image
+from PIL import ExifTags, Image, ImageCms
 
 from hiyoko_viewer.core import metadata
 from hiyoko_viewer.core.metadata import extract_metadata_text, load_metadata_text
@@ -60,7 +60,7 @@ def test_extract_metadata_text_includes_exif_user_comment_and_truncates_long_val
 
     assert "--- AI生成パラメータ (UserComment) ---" in text
     assert "AI prompt" in text
-    assert "--- Exif 詳細 ---" in text
+    assert "--- Exif 基本情報 ---" in text
     assert f"ImageDescription: {'x' * 100}..." in text
 
 
@@ -69,6 +69,73 @@ def test_extract_metadata_text_skips_non_bytes_user_comment() -> None:
 
     assert "--- AI生成パラメータ (UserComment) ---" not in text
     assert "UserComment: not bytes" in text
+
+
+def _save_photo_with_metadata(path) -> None:
+    exif = Image.Exif()
+    exif[0x010F] = "Google"  # Make
+    exif[0x0110] = "Pixel 7a"  # Model
+    exif_ifd = exif.get_ifd(ExifTags.IFD.Exif)
+    exif_ifd[0x829A] = (1, 120)  # ExposureTime
+    exif_ifd[0x829D] = (19, 10)  # FNumber
+    exif_ifd[0x8827] = 400  # ISOSpeedRatings
+    exif_ifd[0x9003] = "2026:11:07 21:04:33"  # DateTimeOriginal
+    exif_ifd[0x9286] = b"UNICODE\x00" + "photo note".encode("utf-16-le")  # UserComment
+    exif_ifd[0x927C] = b"\x01\x02\x03\xff"  # MakerNote
+    gps_ifd = exif.get_ifd(ExifTags.IFD.GPSInfo)
+    gps_ifd[1] = "N"
+    gps_ifd[2] = (35.0, 41.0, 24.0)
+    gps_ifd[3] = "W"
+    gps_ifd[4] = (139.0, 30.0, 0.0)
+    xmp = (
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        b'<rdf:Description xmlns:GCamera="http://ns.google.com/photos/1.0/camera/"'
+        b' xmlns:dc="http://purl.org/dc/elements/1.1/" GCamera:MotionPhoto="1">'
+        b"<dc:subject><rdf:Bag><rdf:li>bird</rdf:li></rdf:Bag></dc:subject>"
+        b"</rdf:Description></rdf:RDF></x:xmpmeta>"
+    )
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    Image.new("RGB", (4, 4)).save(
+        path, "JPEG", exif=exif, xmp=xmp, icc_profile=icc, comment=b"jpeg comment"
+    )
+
+
+def test_load_metadata_text_expands_exif_gps_and_other_metadata(tmp_path) -> None:
+    image_path = tmp_path / "photo.jpg"
+    _save_photo_with_metadata(image_path)
+
+    text = load_metadata_text(str(image_path))
+
+    # IFD0 のポインタ値は出さず、サブ IFD を展開する
+    assert "ExifOffset" not in text
+    assert "GPSInfo:" not in text
+    assert "--- Exif 基本情報 ---" in text
+    assert "Model: Pixel 7a" in text
+    assert "--- Exif 撮影情報 ---" in text
+    assert "ExposureTime: 1/120 秒" in text
+    assert "FNumber: f/1.9" in text
+    assert "ISOSpeedRatings: 400" in text
+    assert "DateTimeOriginal: 2026:11:07 21:04:33" in text
+    assert "--- AI生成パラメータ (UserComment) ---" in text
+    assert "UserComment: photo note" in text
+    assert "MakerNote: <バイナリ 4 bytes>" in text
+    assert "--- GPS 位置情報 ---" in text
+    assert "緯度経度: 35.690000, -139.500000" in text
+    assert "--- JPEG コメント ---" in text
+    assert "jpeg comment" in text
+    assert "--- XMP ---" in text
+    assert "GCamera:MotionPhoto: 1" in text
+    assert "dc:subject: bird" in text
+    assert "--- ICC カラープロファイル ---" in text
+    assert "プロファイル: sRGB" in text
+
+
+def test_extract_metadata_text_falls_back_to_raw_xmp_when_invalid() -> None:
+    text = extract_metadata_text(_FakeImage(info={"xmp": b"<broken"}))
+
+    assert "--- XMP ---" in text
+    assert "<broken" in text
 
 
 def test_extract_metadata_text_returns_no_metadata_message() -> None:
@@ -96,7 +163,7 @@ def test_show_metadata_dialog_passes_loaded_metadata_to_dialog(monkeypatch) -> N
     )
 
     class _Dialog:
-        def __init__(self, title: str, content: str, parent) -> None:
+        def __init__(self, title: str, content: str, parent, **kwargs) -> None:
             dialogs.append({"title": title, "content": content, "parent": parent})
 
         def exec(self) -> None:
@@ -125,3 +192,63 @@ def test_show_metadata_dialog_returns_without_images(monkeypatch) -> None:
     )
 
     ImageViewer.show_metadata_dialog(viewer)
+
+
+def _strip_viewer(file_path: str) -> SimpleNamespace:
+    events: list[str] = []
+    viewer = SimpleNamespace(
+        image_files=[file_path],
+        current_index=0,
+        events=events,
+        _release_current_file_handles=lambda: events.append("release"),
+        load_image_by_index=lambda: events.append("reload"),
+        statusBar=lambda: SimpleNamespace(showMessage=lambda msg, ms: events.append(msg)),
+    )
+    viewer._reload_if_current = lambda path: ImageViewer._reload_if_current(viewer, path)
+    return viewer
+
+
+def test_strip_metadata_with_confirmation_does_nothing_when_cancelled(monkeypatch) -> None:
+    viewer = _strip_viewer(r"C:\images\a.jpg")
+    monkeypatch.setattr(
+        main_window.QMessageBox, "question", lambda *a: main_window.QMessageBox.StandardButton.No
+    )
+    monkeypatch.setattr(
+        main_window, "strip_metadata", lambda path: (_ for _ in ()).throw(AssertionError())
+    )
+
+    assert ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", None) is None
+    assert viewer.events == []
+
+
+def test_strip_metadata_with_confirmation_strips_and_reloads(monkeypatch) -> None:
+    viewer = _strip_viewer(r"C:\images\a.jpg")
+    stripped: list[str] = []
+    monkeypatch.setattr(
+        main_window.QMessageBox, "question", lambda *a: main_window.QMessageBox.StandardButton.Yes
+    )
+    monkeypatch.setattr(main_window, "strip_metadata", lambda path: stripped.append(path) or True)
+    monkeypatch.setattr(main_window, "load_metadata_text", lambda path: f"after:{path}")
+
+    result = ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", None)
+
+    assert result == r"after:C:\images\a.jpg"
+    assert stripped == [r"C:\images\a.jpg"]
+    assert viewer.events[:2] == ["release", "reload"]
+    assert "メタデータを削除しました: a.jpg" in viewer.events
+
+
+def test_strip_metadata_with_confirmation_reports_failure(monkeypatch) -> None:
+    viewer = _strip_viewer(r"C:\images\a.jpg")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        main_window.QMessageBox, "question", lambda *a: main_window.QMessageBox.StandardButton.Yes
+    )
+    monkeypatch.setattr(main_window.QMessageBox, "warning", lambda parent, t, m: warnings.append(m))
+    monkeypatch.setattr(
+        main_window, "strip_metadata", lambda path: (_ for _ in ()).throw(PermissionError("locked"))
+    )
+
+    assert ImageViewer._strip_metadata_with_confirmation(viewer, r"C:\images\a.jpg", None) is None
+    assert warnings and "locked" in warnings[0]
+    assert viewer.events == ["release", "reload"]

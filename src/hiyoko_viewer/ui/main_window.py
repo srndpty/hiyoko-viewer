@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMenuBar,
+    QMessageBox,
     QScrollArea,
     QStatusBar,
     QSystemTrayIcon,
@@ -36,6 +37,7 @@ from ..config.constants import (
     WELCOME_TEXT,
 )
 from ..core.metadata import load_metadata_text
+from ..core.metadata_strip import can_strip_metadata, strip_metadata
 from ..core.resources import resource_path
 from ..core.reveal import reveal_in_file_manager
 from ..services.image_loader import ImageLoader
@@ -493,9 +495,59 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         file_name = os.path.basename(file_path)
         final_text = load_metadata_text(file_path)
 
-        # QMessageBox を使って情報を表示
-        dialog = MetadataDialog(title=f"メタデータ: {file_name}", content=final_text, parent=self)
+        dialog = MetadataDialog(
+            title=f"メタデータ: {file_name}",
+            content=final_text,
+            parent=self,
+            strip_handler=lambda: self._strip_metadata_with_confirmation(file_path, dialog),
+            can_strip=can_strip_metadata(file_path),
+        )
         dialog.exec()
+
+    def _strip_metadata_with_confirmation(self, file_path: str, parent) -> str | None:
+        """確認のうえメタデータを削除して上書き保存し、再読込したメタデータ文字列を返す。
+
+        キャンセル・失敗・変更なしのときは None を返す。
+        """
+        file_name = os.path.basename(file_path)
+        answer = QMessageBox.question(
+            parent,
+            "メタデータを削除",
+            f"「{file_name}」のメタデータを削除して上書き保存します。\n\n"
+            "削除: Exif（位置情報・撮影情報など）、XMP、IPTC、コメント、AI生成パラメータ、"
+            "末尾の追加データ（モーションフォトの動画など）\n"
+            "残す: 画像の向き、カラープロファイル\n\n"
+            "この操作は元に戻せません。よろしいですか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return None
+
+        # アニメーション表示中は QMovie 等がファイルを掴んでいて置き換えに失敗するため、先に解放する
+        self._release_current_file_handles()
+        try:
+            changed = strip_metadata(file_path)
+        except Exception as e:
+            logger.exception("メタデータの削除に失敗: %s", file_path)
+            QMessageBox.warning(parent, "メタデータを削除", f"メタデータの削除に失敗しました:\n{e}")
+            self._reload_if_current(file_path)
+            return None
+
+        self._reload_if_current(file_path)
+        if not changed:
+            self.statusBar().showMessage("削除するメタデータはありませんでした", 5000)
+            return None
+        self.statusBar().showMessage(f"メタデータを削除しました: {file_name}", 5000)
+        return load_metadata_text(file_path)
+
+    def _reload_if_current(self, file_path: str) -> None:
+        """表示中の画像なら読み込み直す（ファイルサイズ表示やアニメーションを復帰させる）。"""
+        if (
+            0 <= self.current_index < len(self.image_files)
+            and self.image_files[self.current_index] == file_path
+        ):
+            self.load_image_by_index()
 
     # --------------------------------------------------------------------------
     # 設定の保存と復元
