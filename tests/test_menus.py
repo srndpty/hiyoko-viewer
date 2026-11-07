@@ -215,7 +215,7 @@ def test_metadata_shortcut_opens_dialog(viewer, monkeypatch) -> None:
     opened: list[str] = []
 
     class _Dialog:
-        def __init__(self, title: str, content: str, parent) -> None:
+        def __init__(self, title: str, content: str, parent, **kwargs) -> None:
             del content, parent
             opened.append(title)
 
