@@ -12,9 +12,11 @@ from PyQt6.QtWidgets import QApplication
 from hiyoko_viewer.ui.frame_progress import (
     BAR_HEIGHT,
     BAR_WIDTH,
-    FILL_COLOR,
+    FILL_END_COLOR,
+    FILL_START_COLOR,
     TRACK_COLOR,
     FrameProgressBar,
+    fill_color_at,
     filled_pixel_width,
     set_frame_progress,
 )
@@ -37,6 +39,19 @@ def _render(bar: FrameProgressBar) -> QImage:
 
 def test_filled_pixel_width_keeps_a_visible_sliver_for_a_tiny_fraction() -> None:
     assert filled_pixel_width(1, 100_000, BAR_WIDTH - 2) == 1
+
+
+def test_fill_color_goes_from_cyan_to_magenta() -> None:
+    assert fill_color_at(0.0) == QColor(FILL_START_COLOR)
+    assert fill_color_at(1.0) == QColor(FILL_END_COLOR)
+    start, end = QColor(FILL_START_COLOR), QColor(FILL_END_COLOR)
+    assert fill_color_at(0.5) == QColor(
+        round((start.red() + end.red()) / 2),
+        round((start.green() + end.green()) / 2),
+        round((start.blue() + end.blue()) / 2),
+    )
+    assert fill_color_at(-1.0) == QColor(FILL_START_COLOR)
+    assert fill_color_at(2.0) == QColor(FILL_END_COLOR)
 
 
 def test_set_frame_progress_ignores_hosts_without_a_bar() -> None:
@@ -87,10 +102,10 @@ def test_frame_progress_paints_a_gapless_partial_fill(qapp) -> None:
     image = _render(bar)
     filled = filled_pixel_width(34, 66, BAR_WIDTH - 2)
     mid_y = BAR_HEIGHT // 2
-    fill = QColor(FILL_COLOR)
+    fill = fill_color_at(34 / 66)
     track = QColor(TRACK_COLOR)
 
-    # 左端の内側は塗られ、塗りの直後はトラックのまま。枠のピクセルは途切れない。
+    # 塗りは進行度に応じた単色。塗りの直後はトラックのまま。枠のピクセルは途切れない。
     assert image.pixelColor(1, mid_y) == fill
     assert image.pixelColor(filled, mid_y) == fill
     assert image.pixelColor(filled + 1, mid_y) == track
@@ -102,8 +117,7 @@ def test_frame_progress_paints_the_full_inner_width_on_the_last_frame(qapp) -> N
     bar = FrameProgressBar()
     bar.set_progress(66, 66)
     image = _render(bar)
-    fill = QColor(FILL_COLOR)
     mid_y = BAR_HEIGHT // 2
 
-    assert image.pixelColor(1, mid_y) == fill
-    assert image.pixelColor(BAR_WIDTH - 2, mid_y) == fill
+    assert image.pixelColor(1, mid_y) == QColor(FILL_END_COLOR)
+    assert image.pixelColor(BAR_WIDTH - 2, mid_y) == QColor(FILL_END_COLOR)
