@@ -800,13 +800,94 @@ def test_redraw_image_ignores_null_pixmap() -> None:
 def test_stop_movie_stops_and_clears_current_movie() -> None:
     movie = _Movie()
     label = _ImageLabel()
+    label.setMovie(movie)
     viewer = SimpleNamespace(current_movie=movie, image_label=label)
 
     ImageViewer.stop_movie(viewer)
 
     assert movie.stopped is True
     assert viewer.current_movie is None
-    assert label.movies == [None]
+    assert label.movies == [movie, None]
+
+
+def test_stop_movie_without_movie_leaves_label_alone() -> None:
+    label = _ImageLabel()
+    viewer = SimpleNamespace(current_movie=None, image_label=label)
+
+    ImageViewer.stop_movie(viewer)
+
+    assert label.movies == []
+
+
+def _delete_sharing_error(path) -> int:
+    """ファイルを削除共有で開けなければ、その Win32 エラーを返す。0 は掴まれていない。"""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    delete_access = 0x00010000
+    share = 0x1 | 0x2 | 0x4  # READ | WRITE | DELETE
+    handle = kernel32.CreateFileW(str(path), delete_access, share, None, 3, 0, None)
+    error = ctypes.get_last_error()
+    if error == 0:
+        kernel32.CloseHandle(handle)
+    return error
+
+
+@pytest.mark.parametrize("suffix", [".gif", ".webp"])
+def test_stop_movie_releases_qmovie_file_handle(qapp, tmp_path, suffix: str) -> None:
+    import sys
+
+    from PIL import Image
+    from PyQt6.QtGui import QMovie
+    from PyQt6.QtWidgets import QLabel
+
+    path = tmp_path / f"anim{suffix}"
+    frames = [Image.new("RGB", (8, 8), color) for color in ("red", "blue")]
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=100, loop=0)
+
+    label = QLabel()
+    movie = QMovie(str(path))
+    assert movie.isValid()
+    label.setMovie(movie)
+    movie.start()
+    qapp.processEvents()
+    if sys.platform == "win32":
+        assert _delete_sharing_error(path) == 32
+
+    viewer = SimpleNamespace(current_movie=movie, image_label=label)
+    ImageViewer.stop_movie(viewer)
+    qapp.processEvents()
+
+    assert viewer.current_movie is None
+    assert label.movie() is None
+    if sys.platform == "win32":
+        # QMovie オブジェクトがまだ生きていても、ファイルは削除できる状態になっている
+        assert _delete_sharing_error(path) == 0
+
+
+def test_stop_movie_releases_apng_file_handle(qapp, tmp_path) -> None:
+    import sys
+
+    from PIL import Image
+    from PyQt6.QtWidgets import QLabel
+
+    from hiyoko_viewer.ui.apng_movie import ApngMovie
+
+    path = tmp_path / "anim.png"
+    frames = [Image.new("RGBA", (4, 4), color) for color in ((255, 0, 0, 255), (0, 255, 0, 255))]
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=40, loop=0)
+    movie = ApngMovie(str(path))
+    assert movie.isValid()
+    if sys.platform == "win32":
+        assert _delete_sharing_error(path) == 32
+
+    viewer = SimpleNamespace(current_movie=movie, image_label=QLabel())
+    ImageViewer.stop_movie(viewer)
+
+    assert viewer.current_movie is None
+    assert movie._image is None
+    if sys.platform == "win32":
+        assert _delete_sharing_error(path) == 0
 
 
 def test_update_status_bar_includes_shuffle_and_movie_state() -> None:
@@ -1455,6 +1536,7 @@ def test_delete_removes_path_from_sorted_image_files(monkeypatch, tmp_path) -> N
 
 def test_close_event_hides_without_clearing_session() -> None:
     hidden = []
+    released = []
     ignored = []
 
     class _Event:
@@ -1464,16 +1546,103 @@ def test_close_event_hides_without_clearing_session() -> None:
     viewer = SimpleNamespace(
         image_files=["photo.png"],
         current_index=0,
+        current_movie=None,
+        _resume_movie_on_show=False,
     )
     viewer.hide = lambda: hidden.append(True)
+    viewer._release_current_file_handles = lambda: released.append(True)
     viewer._clear_display = lambda: (_ for _ in ()).throw(AssertionError("should not clear"))
 
     ImageViewer.closeEvent(viewer, _Event())
 
     assert hidden == [True]
     assert ignored == [True]
+    assert released == [True]
+    assert viewer._resume_movie_on_show is False
     assert viewer.image_files == ["photo.png"]
     assert viewer.current_index == 0
+
+
+def test_close_event_marks_animation_to_resume() -> None:
+    class _Event:
+        def ignore(self):
+            return None
+
+    viewer = SimpleNamespace(
+        image_files=["anim.gif"],
+        current_index=0,
+        current_movie=object(),
+        _resume_movie_on_show=False,
+    )
+    viewer.hide = lambda: None
+    viewer._release_current_file_handles = lambda: None
+
+    ImageViewer.closeEvent(viewer, _Event())
+
+    assert viewer._resume_movie_on_show is True
+
+
+def test_show_window_resumes_movie_before_showing() -> None:
+    calls: list[str] = []
+    viewer = SimpleNamespace()
+    viewer._resume_suspended_movie = lambda: calls.append("resume")
+    viewer.setAttribute = lambda *_args: None
+    viewer.show = lambda: calls.append("show")
+    viewer.activateWindow = lambda: calls.append("activate")
+    viewer.raise_ = lambda: calls.append("raise")
+
+    ImageViewer.show_window(viewer)
+
+    assert calls[0] == "resume"
+    assert "show" in calls
+
+
+def test_resume_suspended_movie_reopens_current_file() -> None:
+    opened: list[str] = []
+    viewer = SimpleNamespace(
+        _resume_movie_on_show=True,
+        is_loading=False,
+        image_files=["anim.gif"],
+        current_index=0,
+        current_movie=None,
+    )
+    viewer._open_movie = lambda path: opened.append(path) or True
+    viewer.redraw_image = lambda: opened.append("redraw")
+    viewer.update_status_bar = lambda: opened.append("status")
+
+    ImageViewer._resume_suspended_movie(viewer)
+
+    assert opened == ["anim.gif", "redraw", "status"]
+    assert viewer._resume_movie_on_show is False
+
+
+def test_update_image_display_defers_movie_while_hidden(monkeypatch) -> None:
+    viewer = SimpleNamespace(
+        image_files=["animation.gif"],
+        current_index=0,
+        current_movie=None,
+        image_label=_ImageLabel(),
+        _load_generation=1,
+        _resume_movie_on_show=False,
+    )
+    viewer.isVisible = lambda: False
+    viewer.stop_movie = lambda: None
+    viewer.redraw_image = lambda: None
+    viewer.update_status_bar = lambda: None
+    viewer.setWindowTitle = lambda title: None
+    monkeypatch.setattr(rendering, "QPixmap", _FakeQPixmap)
+    monkeypatch.setattr(
+        rendering,
+        "QMovie",
+        lambda path: (_ for _ in ()).throw(AssertionError("should not open")),
+    )
+
+    image = _Pixmap()
+    ImageViewer.update_image_display(viewer, 1, "animation.gif", image)
+
+    assert viewer._resume_movie_on_show is True
+    assert viewer.current_movie is None
+    assert viewer.original_pixmap is image
 
 
 class _TrayViewer(SimpleNamespace):

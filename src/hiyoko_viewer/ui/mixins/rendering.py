@@ -24,6 +24,9 @@ from ..action_state import sync_action_states
 from ..apng_movie import ApngMovie, is_animated_png
 from ..frame_progress import set_frame_progress
 
+# 非表示中はファイルを開かず、再表示まで静止画のままにする拡張子
+_MOVIE_CANDIDATE_EXTS = frozenset({".gif", ".webp", ".png"})
+
 
 class RenderingMixin:
     """画像表示まわりのメソッド群。"""
@@ -40,6 +43,83 @@ class RenderingMixin:
             # 壊れたファイルなどは安全側で False
             return False
 
+    def _is_window_visible(self) -> bool:
+        """表示中なら True。ウィンドウを持たない単体テストは表示中とみなす。"""
+        is_visible = getattr(self, "isVisible", None)
+        if not callable(is_visible):
+            return True
+        return bool(is_visible())
+
+    def _open_movie(self, file_path: str) -> bool:
+        """アニメーションなら再生を始め、ファイルを掴む。静止画なら何も開かず False。"""
+        ext = os.path.splitext(file_path)[1].lower()
+        is_apng = ext == ".png"
+        if ext == ".webp" and not self._is_animated_webp(file_path):
+            return False
+        if ext == ".png" and not is_animated_png(file_path):
+            return False
+        if ext not in (".gif", ".webp", ".png"):
+            return False
+
+        # Qt は APNG を解釈できないため、PNG のアニメーションだけ ApngMovie で扱う
+        movie = ApngMovie(file_path) if is_apng else QMovie(file_path)
+        if not movie.isValid():
+            # 開けなくても QMovie はファイルを掴んだままになることがある
+            RenderingMixin._close_movie_file(self, movie)
+            return False
+
+        self.svg_renderer = None
+        self.current_movie = movie
+        movie.frameChanged.connect(self.on_gif_first_frame)
+        movie.frameChanged.connect(self.update_gif_frame_status)
+        if is_apng:
+            # QLabel は QMovie しか setMovie できないので、フレームごとに pixmap を差し替える
+            movie.frameChanged.connect(self._show_apng_frame)
+        else:
+            self.image_label.setMovie(movie)
+        movie.start()
+        return True
+
+    def _show_still_image(self, file_path: str, ext: str, image: QImage) -> None:
+        """デコード済みの静止画（またはアニメーションの先頭フレーム）を表示する。"""
+        # SVG はベクターのまま保持し、ズーム/フィットのたびに再ラスタライズする。
+        # （worker が渡す pixmap は固有サイズの 1 回ラスタライズで、拡大するとガビガビになるため）
+        self.svg_renderer = None
+        if ext in (".svg", ".svgz"):
+            renderer = QSvgRenderer(file_path)
+            if renderer.isValid():
+                self.svg_renderer = renderer
+
+        if self.svg_renderer is not None:
+            size = self.svg_renderer.defaultSize()
+            if size.isEmpty():
+                size = QSize(512, 512)
+            # original_pixmap は固有サイズの基準（サイズ表示・アスペクト比）として保持
+            self.original_pixmap = self._render_svg(size)
+        elif image.isNull():
+            self.image_label.setText("画像の読み込みに失敗しました")
+            self.original_pixmap = QPixmap()
+        else:
+            # QPixmap への変換は GUI スレッドであるここで行う
+            self.original_pixmap = QPixmap.fromImage(image)
+        self.redraw_image()
+        self.update_status_bar()
+
+    def _resume_suspended_movie(self) -> None:
+        """トレイから戻したとき、隠す前に離したアニメーションを開き直す。"""
+        if not getattr(self, "_resume_movie_on_show", False):
+            return
+        self._resume_movie_on_show = False
+        if self.is_loading or not self.image_files or self.current_index < 0:
+            return
+        if self.current_movie is not None:
+            return
+        file_path = self.image_files[self.current_index]
+        if self._open_movie(file_path):
+            self.redraw_image()
+            self.update_status_bar()
+        sync_action_states(self)
+
     @pyqtSlot(int, str, QImage)
     def update_image_display(self, generation: int, file_path: str, image: QImage) -> None:
         # 別ディレクトリを開き直した後に届いた古い結果は無視する
@@ -51,59 +131,16 @@ class RenderingMixin:
             return
         self.stop_movie()
         ext = os.path.splitext(file_path)[1].lower()
-        use_movie = False
-        is_apng = False
-
-        if ext == ".gif":
-            use_movie = True
-        elif ext == ".webp" and self._is_animated_webp(file_path):
-            # アニメーション WebP だけ QMovie で扱う
-            use_movie = True
-        elif ext == ".png" and is_animated_png(file_path):
-            # Qt は APNG を解釈できないため、Pillow ベースの ApngMovie で扱う
-            use_movie = True
-            is_apng = True
-
-        if use_movie:
-            self.svg_renderer = None
-            movie = ApngMovie(file_path) if is_apng else QMovie(file_path)
-            if movie.isValid():
-                self.current_movie = movie
-                self.current_movie.frameChanged.connect(self.on_gif_first_frame)
-                self.current_movie.frameChanged.connect(self.update_gif_frame_status)
-                if is_apng:
-                    # QLabel は QMovie しか setMovie できないので、フレームごとに pixmap を差し替える
-                    self.current_movie.frameChanged.connect(self._show_apng_frame)
-                else:
-                    self.image_label.setMovie(self.current_movie)
-                self.current_movie.start()
-            else:
-                # 何らかの理由で QMovie が扱えなければ静止画フォールバック
-                use_movie = False
-
-        if not use_movie:
-            # SVG はベクターのまま保持し、ズーム/フィットのたびに再ラスタライズする。
-            # （worker が渡す pixmap は固有サイズの 1 回ラスタライズで、拡大するとガビガビになるため）
-            self.svg_renderer = None
-            if ext in (".svg", ".svgz"):
-                renderer = QSvgRenderer(file_path)
-                if renderer.isValid():
-                    self.svg_renderer = renderer
-
-            if self.svg_renderer is not None:
-                size = self.svg_renderer.defaultSize()
-                if size.isEmpty():
-                    size = QSize(512, 512)
-                # original_pixmap は固有サイズの基準（サイズ表示・アスペクト比）として保持
-                self.original_pixmap = self._render_svg(size)
-            elif image.isNull():
-                self.image_label.setText("画像の読み込みに失敗しました")
-                self.original_pixmap = QPixmap()
-            else:
-                # QPixmap への変換は GUI スレッドであるここで行う
-                self.original_pixmap = QPixmap.fromImage(image)
-            self.redraw_image()
-            self.update_status_bar()
+        # トレイ格納中にデコードが終わっても、アニメーション用にファイルを開き直さない
+        # メソッドはクラスから呼ぶ。単体テストは SimpleNamespace を self に渡すため。
+        if ext in _MOVIE_CANDIDATE_EXTS and not RenderingMixin._is_window_visible(self):
+            self._resume_movie_on_show = True
+            RenderingMixin._show_still_image(self, file_path, ext, image)
+        elif RenderingMixin._open_movie(self, file_path):
+            self._resume_movie_on_show = False
+        else:
+            self._resume_movie_on_show = False
+            RenderingMixin._show_still_image(self, file_path, ext, image)
 
         self.setWindowTitle(
             f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}"
@@ -179,21 +216,34 @@ class RenderingMixin:
     def _release_current_file_handles(self) -> None:
         """現在表示中のファイルを掴み得るリソース（QMovie / ApngMovie）を解放する。
 
-        QMovie / ApngMovie は Windows で元ファイルのハンドルを保持し得るため、move/delete の前に
-        明示的に止める。静止画の pixmap は既にメモリ上にあり元ファイルを掴まないので、
-        ラベル表示まで消す必要はない（消すと操作失敗時に表示だけ空になってしまう）。
+        QMovie.stop() は Windows のファイルハンドルを閉じない。破棄か setFileName("") まで
+        掴んだままになる。ApngMovie は Pillow のファイルを stop() で閉じる。
+        静止画の pixmap はメモリ上にあり元ファイルを掴まない。QLabel.setMovie(None) は
+        pixmap まで消すので、QMovie を載せていないときは呼ばない。
         """
         self.stop_movie()
 
+    def _close_movie_file(self, movie: QMovie | ApngMovie) -> None:
+        """再生を止め、元ファイルのハンドルをすぐに閉じる。"""
+        try:
+            movie.frameChanged.disconnect()
+        except TypeError:
+            pass
+        movie.stop()
+        # QMovie.stop() は QFile を閉じない。空のファイル名でデバイスを捨てる。
+        if isinstance(movie, QMovie):
+            movie.setFileName("")
+
     def stop_movie(self) -> None:
-        if self.current_movie:
-            try:
-                self.current_movie.frameChanged.disconnect()
-            except TypeError:
-                pass
-            self.current_movie.stop()
-            self.current_movie = None
-        self.image_label.setMovie(None)
+        movie = self.current_movie
+        if movie is None:
+            return
+        self.current_movie = None
+        # QLabel が QMovie を掴んでいると、Python 側の参照を捨ててもハンドルが残る。
+        # setMovie(None) は pixmap も消すので、QMovie を載せていないときは呼ばない。
+        if self.image_label.movie() is not None:
+            self.image_label.setMovie(None)
+        RenderingMixin._close_movie_file(self, movie)
         sync_action_states(self)
 
     def _redraw_gif(self) -> None:

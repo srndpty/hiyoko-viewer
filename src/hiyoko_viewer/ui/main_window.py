@@ -131,6 +131,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.original_pixmap = QPixmap()
         self.svg_renderer = None
         self.current_movie = None
+        # トレイへ隠しているあいだ、アニメーションのファイルハンドルを離したか
+        self._resume_movie_on_show = False
         self._metadata_strip_task = None
         self._metadata_strip_dialog = None
         self._quit_after_metadata_strip = False
@@ -382,6 +384,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
 
     def show_window(self) -> None:
         """ウィンドウを表示し、アクティブにする"""
+        # 表示の直前に、隠しているあいだ離していたアニメーションを開き直す
+        self._resume_suspended_movie()
         # 表示する直前に、フラッシュを防ぐための属性を設定する
         # WA_TranslucentBackground を使うと、Qtは自身の背景を描画せず、
         # 子ウィジェット（scroll_areaなど）が描画されるのを待つため、フラッシュが抑制される
