@@ -97,6 +97,10 @@ class InputEventMixin:
         """
         event.ignore()
         if self.current_movie is not None:
+            # stop すると一時停止やフレーム番号が失われるので、離す前に控える
+            remember_playback = getattr(self, "_remember_suspended_playback", None)
+            if remember_playback is not None:
+                remember_playback()
             self._resume_movie_on_show = True
         self._release_current_file_handles()
         self.hide()

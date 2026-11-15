@@ -98,14 +98,46 @@ def _coerce_recent_files(raw: object) -> list[str]:
     return result
 
 
-def _recent_file_label(path: str, index: int, duplicate_basename: bool) -> str:
+def _parent_chain(path: str, depth: int) -> str:
+    """path の親を depth 段だけ、ルートに近い順で連結する。"""
+    parent = os.path.dirname(path)
+    parts: list[str] = []
+    for _ in range(depth):
+        if not parent:
+            break
+        name = os.path.basename(parent)
+        if not name:
+            parts.insert(0, parent)
+            break
+        parts.insert(0, name)
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            break
+        parent = next_parent
+    return os.sep.join(parts)
+
+
+def _recent_visible_name(path: str, all_paths: list[str]) -> str:
+    """同名が無ければファイル名だけ。あれば親を、区別できる段数まで足す。"""
+    base = os.path.basename(path)
+    base_key = os.path.normcase(base)
+    group = [item for item in all_paths if os.path.normcase(os.path.basename(item)) == base_key]
+    if len(group) <= 1:
+        return base
+    depth = 1
+    while True:
+        chains = [_parent_chain(item, depth) for item in group]
+        folded = {os.path.normcase(chain) for chain in chains}
+        grown = depth == 1 or chains != [_parent_chain(item, depth - 1) for item in group]
+        if len(folded) == len(chains) or not grown or depth >= 32:
+            chain = _parent_chain(path, depth)
+            return f"{base} ({chain})" if chain else base
+        depth += 1
+
+
+def _recent_file_label(path: str, index: int, all_paths: list[str]) -> str:
     """メニュー項目のラベル。先頭の数字がアクセスキー。ファイル名中の & はエスケープする。"""
-    name = os.path.basename(path)
-    if duplicate_basename:
-        parent = os.path.dirname(path)
-        parent_name = os.path.basename(parent) or parent
-        name = f"{name} ({parent_name})"
-    visible = name.replace("&", "&&")
+    visible = _recent_visible_name(path, all_paths).replace("&", "&&")
     if index < 9:
         return f"&{index + 1} {visible}"
     if index == 9:
@@ -173,6 +205,11 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self.current_movie = None
         # トレイへ隠しているあいだ、アニメーションのファイルハンドルを離したか
         self._resume_movie_on_show = False
+        # トレイへ隠す直前のフレーム番号。None は「再生中のアニメーションは無い」
+        self._suspended_movie_frame: int | None = None
+        self._suspended_movie_paused = False
+        # (generation, path)。画像の読み込みが成功するまで履歴には入れない
+        self._pending_recent_file: tuple[int, str] | None = None
         self._metadata_strip_task = None
         self._metadata_strip_dialog = None
         self._quit_after_metadata_strip = False
@@ -449,8 +486,30 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
 
+    def _commit_pending_recent_file(self, generation: int, file_path: str) -> None:
+        """この世代の読み込みが成功したときだけ、履歴へ追加する。"""
+        pending = self._pending_recent_file
+        path = os.path.normpath(file_path)
+        if pending is None or pending[0] != generation:
+            return
+        if os.path.normcase(pending[1]) != os.path.normcase(path):
+            return
+        self._pending_recent_file = None
+        self._remember_recent_file(path)
+
+    def _drop_pending_recent_file(self, generation: int, file_path: str | None = None) -> None:
+        """読み込み失敗や空の一覧では、その世代の候補を履歴にしない。"""
+        pending = self._pending_recent_file
+        if pending is None or pending[0] != generation:
+            return
+        if file_path is not None and os.path.normcase(pending[1]) != os.path.normcase(
+            os.path.normpath(file_path)
+        ):
+            return
+        self._pending_recent_file = None
+
     def _remember_recent_file(self, file_path: str) -> None:
-        """開いたファイルを履歴の先頭に足す。矢印での画像送りはここを通らない。"""
+        """読み込めたファイルを履歴の先頭に足す。矢印での画像送りはここを通らない。"""
         if not file_path or not os.path.isfile(file_path):
             return
         path = os.path.normpath(file_path)
@@ -469,6 +528,24 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         if kept == self._recent_files:
             return
         self._recent_files = kept
+        self._save_recent_files()
+        self._rebuild_recent_menu()
+
+    def _retarget_recent_file(self, old_path: str, new_path: str) -> None:
+        """アプリ自身が移動したファイルは、履歴のパスだけ差し替える。"""
+        old_key = os.path.normcase(os.path.normpath(old_path))
+        new_norm = os.path.normpath(new_path)
+        updated: list[str] = []
+        changed = False
+        for item in self._recent_files:
+            if os.path.normcase(item) == old_key:
+                updated.append(new_norm)
+                changed = True
+            else:
+                updated.append(item)
+        if not changed:
+            return
+        self._recent_files = _coerce_recent_files(updated)
         self._save_recent_files()
         self._rebuild_recent_menu()
 
@@ -496,12 +573,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
             empty = menu.addAction("（なし）")
             empty.setEnabled(False)
         else:
-            basename_keys = [
-                os.path.normcase(os.path.basename(path)) for path in self._recent_files
-            ]
             for index, path in enumerate(self._recent_files):
-                duplicate = basename_keys.count(os.path.normcase(os.path.basename(path))) > 1
-                action = menu.addAction(_recent_file_label(path, index, duplicate))
+                action = menu.addAction(_recent_file_label(path, index, self._recent_files))
                 action.setToolTip(path)
                 action.setStatusTip(path)
                 action.triggered.connect(

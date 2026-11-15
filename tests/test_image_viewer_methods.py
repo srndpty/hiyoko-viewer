@@ -493,7 +493,7 @@ def test_load_image_from_path_ignores_empty_path() -> None:
     ImageViewer.load_image_from_path(viewer, "")
 
 
-def test_load_image_from_path_records_the_opened_file(tmp_path) -> None:
+def test_load_image_from_path_defers_recent_file_until_it_displays(tmp_path) -> None:
     emitter = _Emitter()
     remembered: list[str] = []
     image_path = tmp_path / "Photo.PNG"
@@ -504,7 +504,96 @@ def test_load_image_from_path_records_the_opened_file(tmp_path) -> None:
 
     ImageViewer.load_image_from_path(viewer, str(image_path).replace(os.sep, "/"))
 
-    assert remembered == [os.path.normpath(str(image_path))]
+    assert remembered == []
+    assert viewer._pending_recent_file == (1, os.path.normpath(str(image_path)))
+
+
+def _viewer_waiting_to_record(path: str, generation: int = 1) -> SimpleNamespace:
+    viewer = SimpleNamespace(
+        image_files=[path],
+        current_index=0,
+        current_movie=None,
+        image_label=_ImageLabel(),
+        _load_generation=generation,
+        _pending_recent_file=(generation, path),
+        svg_renderer=None,
+    )
+    viewer.stop_movie = lambda: None
+    viewer.redraw_image = lambda: None
+    viewer.update_status_bar = lambda: None
+    viewer.setWindowTitle = lambda title: None
+    viewer._remember_recent_file = viewer_remembered(viewer).append
+    viewer._commit_pending_recent_file = (
+        lambda file_generation, file_path: ImageViewer._commit_pending_recent_file(
+            viewer, file_generation, file_path
+        )
+    )
+    viewer._drop_pending_recent_file = (
+        lambda file_generation, file_path=None: ImageViewer._drop_pending_recent_file(
+            viewer, file_generation, file_path
+        )
+    )
+    return viewer
+
+
+def viewer_remembered(viewer: SimpleNamespace) -> list[str]:
+    remembered = getattr(viewer, "_remembered_paths", None)
+    if remembered is None:
+        remembered = []
+        viewer._remembered_paths = remembered
+    return remembered
+
+
+def test_successful_display_records_the_pending_file(monkeypatch) -> None:
+    path = "photo.png"
+    viewer = _viewer_waiting_to_record(path)
+    monkeypatch.setattr(rendering, "QPixmap", _FakeQPixmap)
+    monkeypatch.setattr(rendering, "is_animated_png", lambda file_path: False)
+
+    ImageViewer.update_image_display(viewer, 1, path, _Pixmap())
+
+    assert viewer_remembered(viewer) == [path]
+    assert viewer._pending_recent_file is None
+
+
+def test_failed_display_does_not_record_the_pending_file(monkeypatch) -> None:
+    path = "bad.webp"
+    viewer = _viewer_waiting_to_record(path)
+    monkeypatch.setattr(rendering, "QPixmap", _FakeQPixmap)
+
+    ImageViewer.update_image_display(viewer, 1, path, _Pixmap(is_null=True))
+
+    assert viewer_remembered(viewer) == []
+    assert viewer._pending_recent_file is None
+
+
+def test_stale_generation_does_not_record_the_pending_file() -> None:
+    path = "photo.png"
+    viewer = _viewer_waiting_to_record(path, generation=2)
+
+    ImageViewer.update_image_display(viewer, 1, path, _Pixmap())
+
+    assert viewer_remembered(viewer) == []
+    assert viewer._pending_recent_file == (2, path)
+
+
+def test_empty_file_list_drops_the_pending_recent_file() -> None:
+    label = _ImageLabel()
+    viewer = SimpleNamespace(
+        image_label=label,
+        _load_generation=3,
+        _pending_recent_file=(3, "a.png"),
+    )
+    viewer._drop_pending_recent_file = (
+        lambda generation, file_path=None: ImageViewer._drop_pending_recent_file(
+            viewer, generation, file_path
+        )
+    )
+
+    ImageViewer.on_file_list_loaded(viewer, 3, [], -1)
+
+    assert label.texts == ["画像の読み込みに失敗しました。"]
+    assert viewer._pending_recent_file is None
 
 
 def test_show_next_image_does_not_record_a_recent_file() -> None:
@@ -1329,7 +1418,7 @@ def qapp():
 def test_redraw_gif_fit_and_original_size_modes() -> None:
     label = _ImageLabel()
     scroll_area = _ScrollAreaWithViewport()
-    movie = _Movie(QMovie.MovieState.Paused)
+    movie = _Movie(QMovie.MovieState.NotRunning)
     viewer = SimpleNamespace(
         image_label=label,
         scroll_area=scroll_area,
@@ -1348,6 +1437,11 @@ def test_redraw_gif_fit_and_original_size_modes() -> None:
     assert len(label.fixed_sizes) == 2
     assert label.movies == [movie]
     assert movie.started is True
+
+    paused = _Movie(QMovie.MovieState.Paused)
+    viewer.current_movie = paused
+    ImageViewer._redraw_gif(viewer)
+    assert paused.started is False
 
 
 def test_zoom_at_cursor_switches_from_fit_mode_and_scrolls() -> None:
@@ -1425,11 +1519,22 @@ def test_coerce_recent_files_dedupes_and_caps() -> None:
     assert main_window._coerce_recent_files(many)[0] == os.path.normpath(many[0])
 
 
-def test_recent_file_label_numbers_and_escapes() -> None:
-    assert main_window._recent_file_label(os.path.join("dir", "a.png"), 0, False) == "&1 a.png"
-    assert main_window._recent_file_label(os.path.join("dir", "a&b.png"), 9, False) == "&0 a&&b.png"
-    labeled = main_window._recent_file_label(os.path.join("folder", "a.png"), 1, True)
-    assert labeled == "&2 a.png (folder)"
+def test_recent_file_label_numbers_escapes_and_disambiguates() -> None:
+    path = os.path.join("dir", "a.png")
+    assert main_window._recent_file_label(path, 0, [path]) == "&1 a.png"
+    amp = os.path.join("dir", "a&b.png")
+    assert main_window._recent_file_label(amp, 9, [amp]) == "&0 a&&b.png"
+    one = os.path.join("one", "a.png")
+    two = os.path.join("two", "a.png")
+    assert main_window._recent_file_label(one, 1, [one, two]) == "&2 a.png (one)"
+    older = os.path.join("2025", "output", "a.png")
+    newer = os.path.join("2026", "output", "a.png")
+    assert main_window._recent_file_label(older, 0, [older, newer]) == (
+        f"&1 a.png (2025{os.sep}output)"
+    )
+    assert main_window._recent_file_label(newer, 1, [older, newer]) == (
+        f"&2 a.png (2026{os.sep}output)"
+    )
 
 
 def test_load_settings_restores_recent_files(qapp, monkeypatch) -> None:
@@ -1689,6 +1794,36 @@ def test_resume_suspended_movie_reopens_current_file() -> None:
 
     assert opened == ["anim.gif", "redraw", "status"]
     assert viewer._resume_movie_on_show is False
+
+
+def test_resume_reloads_existing_file_when_movie_will_not_open(qapp, tmp_path) -> None:
+    path = tmp_path / "anim.gif"
+    path.write_bytes(b"not-a-gif")
+    loaded: list[str] = []
+    viewer = SimpleNamespace(
+        _resume_movie_on_show=True,
+        is_loading=False,
+        image_files=[str(path)],
+        current_index=0,
+        current_movie=None,
+        _suspended_movie_frame=2,
+        _suspended_movie_paused=True,
+        original_pixmap=_Pixmap(),
+        svg_renderer=object(),
+        image_label=_ImageLabel(),
+    )
+    viewer._open_movie = lambda file_path: False
+    viewer.stop_movie = lambda: None
+    viewer.load_image_by_index = lambda: loaded.append(str(path))
+    viewer._recover_failed_movie_resume = (
+        lambda file_path: ImageViewer._recover_failed_movie_resume(viewer, file_path)
+    )
+
+    ImageViewer._resume_suspended_movie(viewer)
+
+    assert loaded == [str(path)]
+    assert viewer.original_pixmap.isNull()
+    assert viewer._suspended_movie_frame is None
 
 
 def test_update_image_display_defers_movie_while_hidden(monkeypatch) -> None:

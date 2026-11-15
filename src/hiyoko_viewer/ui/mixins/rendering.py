@@ -28,6 +28,36 @@ from ..frame_progress import set_frame_progress
 _MOVIE_CANDIDATE_EXTS = frozenset({".gif", ".webp", ".png"})
 
 
+def _seek_movie_frame(movie: QMovie | ApngMovie, frame: int) -> None:
+    """frame まで移動する。
+
+    QMovie は隣以外のフレームへ jumpToFrame すると、失敗した時点で NotRunning になる。
+    その後のコマ送りは番号だけ進み、再生も一時停止も戻せない。だから 1 枚ずつ進める。
+    ApngMovie は指定フレームへ直接飛ぶ。
+    """
+    if frame <= 0:
+        return
+    if isinstance(movie, ApngMovie):
+        movie.jumpToFrame(frame)
+        return
+    current = movie.currentFrameNumber()
+    if not isinstance(current, int) or current < 0:
+        current = 0
+    if frame < current:
+        # 0 番への移動だけは QMovie が巻き戻しとして扱う
+        if not movie.jumpToFrame(0):
+            return
+        landed = movie.currentFrameNumber()
+        current = landed if isinstance(landed, int) and landed >= 0 else 0
+    while current < frame:
+        if not movie.jumpToFrame(current + 1):
+            return
+        landed = movie.currentFrameNumber()
+        if not isinstance(landed, int) or landed <= current:
+            return
+        current = landed
+
+
 class RenderingMixin:
     """画像表示まわりのメソッド群。"""
 
@@ -54,7 +84,7 @@ class RenderingMixin:
         """アニメーションなら再生を始め、ファイルを掴む。静止画なら何も開かず False。"""
         ext = os.path.splitext(file_path)[1].lower()
         is_apng = ext == ".png"
-        if ext == ".webp" and not self._is_animated_webp(file_path):
+        if ext == ".webp" and not RenderingMixin._is_animated_webp(self, file_path):
             return False
         if ext == ".png" and not is_animated_png(file_path):
             return False
@@ -105,6 +135,54 @@ class RenderingMixin:
         self.redraw_image()
         self.update_status_bar()
 
+    def _remember_suspended_playback(self) -> None:
+        """ファイルを離す前に、フレーム位置と一時停止かどうかを控える。
+
+        有限ループの周回数までは戻さない。戻すのは見えているフレームと、
+        再生中でなかったことだけ。
+        """
+        movie = self.current_movie
+        frame = 0
+        paused = True
+        is_valid = getattr(movie, "isValid", None)
+        if movie is not None and callable(is_valid) and is_valid():
+            number = movie.currentFrameNumber()
+            if isinstance(number, int) and number >= 0:
+                frame = number
+            paused = movie.state() != QMovie.MovieState.Running
+        self._suspended_movie_frame = frame
+        self._suspended_movie_paused = paused
+
+    def _restore_suspended_playback(self) -> None:
+        """開き直したアニメーションを、隠す前のフレームと一時停止へ戻す。"""
+        frame = getattr(self, "_suspended_movie_frame", None)
+        paused = bool(getattr(self, "_suspended_movie_paused", False))
+        self._suspended_movie_frame = None
+        self._suspended_movie_paused = False
+        movie = self.current_movie
+        if movie is None or not movie.isValid():
+            return
+        if isinstance(frame, int) and frame > 0:
+            _seek_movie_frame(movie, frame)
+        if paused and movie.state() == QMovie.MovieState.Running:
+            movie.setPaused(True)
+
+    def _recover_failed_movie_resume(self, file_path: str) -> None:
+        """開き直せなかったアニメーションの、隠す前の画像を残さない。"""
+        self._suspended_movie_frame = None
+        self._suspended_movie_paused = False
+        self.original_pixmap = QPixmap()
+        self.svg_renderer = None
+        self.stop_movie()
+        set_frame_progress(self, 0, 0)
+        name = os.path.basename(file_path)
+        if os.path.isfile(file_path):
+            self.load_image_by_index()
+            return
+        self.image_label.setText(f"ファイルが見つかりません\n{name}")
+        self.image_label.setStyleSheet(NOTICE_TEXT_STYLE)
+        self.statusBar().showMessage(f"ファイルが見つかりません: {name}", 3000)
+
     def _resume_suspended_movie(self) -> None:
         """トレイから戻したとき、隠す前に離したアニメーションを開き直す。"""
         if not getattr(self, "_resume_movie_on_show", False):
@@ -117,7 +195,12 @@ class RenderingMixin:
         file_path = self.image_files[self.current_index]
         if self._open_movie(file_path):
             self.redraw_image()
+            restore = getattr(self, "_restore_suspended_playback", None)
+            if restore is not None:
+                restore()
             self.update_status_bar()
+        elif getattr(self, "_suspended_movie_frame", None) is not None:
+            self._recover_failed_movie_resume(file_path)
         sync_action_states(self)
 
     @pyqtSlot(int, str, QImage)
@@ -131,16 +214,30 @@ class RenderingMixin:
             return
         self.stop_movie()
         ext = os.path.splitext(file_path)[1].lower()
+        # 別の画像を表示するので、前のアニメーションの一時停止位置は使わない
+        self._suspended_movie_frame = None
+        self._suspended_movie_paused = False
         # トレイ格納中にデコードが終わっても、アニメーション用にファイルを開き直さない
         # メソッドはクラスから呼ぶ。単体テストは SimpleNamespace を self に渡すため。
         if ext in _MOVIE_CANDIDATE_EXTS and not RenderingMixin._is_window_visible(self):
             self._resume_movie_on_show = True
             RenderingMixin._show_still_image(self, file_path, ext, image)
+            displayed = not image.isNull()
         elif RenderingMixin._open_movie(self, file_path):
             self._resume_movie_on_show = False
+            displayed = True
         else:
             self._resume_movie_on_show = False
             RenderingMixin._show_still_image(self, file_path, ext, image)
+            displayed = self.svg_renderer is not None or not image.isNull()
+        if displayed:
+            commit = getattr(self, "_commit_pending_recent_file", None)
+            if commit is not None:
+                commit(generation, file_path)
+        else:
+            drop = getattr(self, "_drop_pending_recent_file", None)
+            if drop is not None:
+                drop(generation, file_path)
 
         self.setWindowTitle(
             f"[{self.current_index + 1}/{len(self.image_files)}] {os.path.basename(file_path)}"
@@ -264,7 +361,11 @@ class RenderingMixin:
             self.image_label.setPixmap(self.current_movie.currentPixmap())
         elif self.image_label.movie() is not self.current_movie:
             self.image_label.setMovie(self.current_movie)
-        if self.current_movie and self.current_movie.state() != QMovie.MovieState.Running:
+        # 一時停止はリサイズでも維持する。止まっているときだけ再生を始める。
+        if (
+            self.current_movie is not None
+            and self.current_movie.state() == QMovie.MovieState.NotRunning
+        ):
             self.current_movie.start()
 
     def _redraw_static_image(self) -> None:

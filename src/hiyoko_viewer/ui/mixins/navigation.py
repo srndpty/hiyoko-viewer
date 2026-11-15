@@ -32,9 +32,11 @@ class NavigationMixin:
         # send2trash が付ける \\?\ 接頭辞付きでは / が区切りと解釈されず削除に失敗するため、
         # 入口でネイティブ区切りに正規化しておく。
         file_path = os.path.normpath(file_path)
-        remember = getattr(self, "_remember_recent_file", None)
-        if remember is not None:
-            remember(file_path)
+        # 履歴へは、この世代の画像が実際に表示できたときだけ入れる。
+        if os.path.isfile(file_path):
+            self._pending_recent_file = (generation, file_path)
+        else:
+            self._pending_recent_file = None
         directory = os.path.dirname(file_path)
         normalized_path = os.path.normcase(file_path)
         self.request_load_list.emit(generation, directory, normalized_path)
@@ -45,6 +47,9 @@ class NavigationMixin:
         if generation != self._load_generation:
             return
         if not image_list:
+            drop = getattr(self, "_drop_pending_recent_file", None)
+            if drop is not None:
+                drop(generation)
             self.image_label.setText("画像の読み込みに失敗しました。")
             return
 
@@ -117,7 +122,10 @@ class NavigationMixin:
         dest_folder = os.path.join(os.path.dirname(source_path), subfolder_name)
         os.makedirs(dest_folder, exist_ok=True)
         try:
-            shutil.move(source_path, dest_folder)
+            destination = shutil.move(source_path, dest_folder)
+            retarget = getattr(self, "_retarget_recent_file", None)
+            if retarget is not None:
+                retarget(source_path, destination)
             self._remove_path_from_lists(source_path)
             if not self.image_files:
                 self._clear_display()
@@ -138,6 +146,9 @@ class NavigationMixin:
         self._release_current_file_handles()
         try:
             send2trash(source_path)
+            forget = getattr(self, "_forget_recent_file", None)
+            if forget is not None:
+                forget(source_path)
             self._remove_path_from_lists(source_path)
             if not self.image_files:
                 self._clear_display()

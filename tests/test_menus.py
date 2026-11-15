@@ -471,16 +471,42 @@ def _recent_labels(viewer: ImageViewer) -> list[str]:
     return [action.text() for action in viewer.recent_menu.actions() if not action.isSeparator()]
 
 
-def test_opening_a_file_adds_it_to_the_recent_menu(viewer, tmp_path, monkeypatch) -> None:
+def test_opening_a_file_adds_it_only_after_it_loads(viewer, tmp_path, monkeypatch) -> None:
+    from PIL import Image
+    from PyQt6.QtGui import QImage
+
     _use_memory_settings(monkeypatch)
-    path = tmp_path / "chick.webp"
+    path = tmp_path / "chick.png"
+    Image.new("RGB", (2, 2), "red").save(path)
+    norm = os.path.normpath(str(path))
+
+    viewer.load_image_from_path(norm)
+
+    assert viewer._recent_files == []
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.update_image_display(viewer._load_generation, norm, QImage(norm))
+
+    assert viewer._recent_files == [norm]
+    assert _recent_labels(viewer)[0].endswith("chick.png")
+    assert _MemorySettings.written["recent_files"] == [norm]
+
+
+def test_broken_file_is_not_added_to_recent_files(viewer, tmp_path, monkeypatch) -> None:
+    from PyQt6.QtGui import QImage
+
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "bad.webp"
     path.write_bytes(b"x")
+    norm = os.path.normpath(str(path))
 
-    viewer.load_image_from_path(str(path))
+    viewer.load_image_from_path(norm)
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.update_image_display(viewer._load_generation, norm, QImage())
 
-    assert viewer._recent_files == [os.path.normpath(str(path))]
-    assert _recent_labels(viewer)[0].endswith("chick.webp")
-    assert _MemorySettings.written["recent_files"] == [os.path.normpath(str(path))]
+    assert viewer._recent_files == []
+    assert viewer._pending_recent_file is None
 
 
 def test_recent_menu_puts_newest_first_and_drops_the_oldest(viewer, tmp_path, monkeypatch) -> None:
@@ -583,3 +609,122 @@ def test_clear_recent_files_empties_the_menu(viewer, tmp_path, monkeypatch) -> N
     clear_action = viewer.recent_menu.actions()[-1]
     assert clear_action.text() == "履歴を消去(&C)"
     assert clear_action.isEnabled() is False
+
+
+def _save_gif(path, *, frames: int = 4) -> None:
+    from PIL import Image
+
+    colors = ("red", "green", "blue", "white")
+    images = [Image.new("RGB", (8, 8), colors[index % len(colors)]) for index in range(frames)]
+    images[0].save(path, save_all=True, append_images=images[1:], duration=10000, loop=0)
+
+
+def _save_apng(path) -> None:
+    from PIL import Image
+
+    frames = [Image.new("RGBA", (4, 4), color) for color in ((255, 0, 0, 255), (0, 255, 0, 255))]
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=10000, loop=0)
+
+
+def test_tray_resume_keeps_paused_gif_frame(viewer, tmp_path) -> None:
+    from PyQt6.QtGui import QCloseEvent, QMovie
+
+    path = tmp_path / "anim.gif"
+    _save_gif(path)
+    norm = os.path.normpath(str(path))
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    assert viewer._open_movie(norm)
+    # QMovie はキャッシュが無いと、0 から 2 へは直接飛べない
+    assert viewer.current_movie.jumpToFrame(1)
+    assert viewer.current_movie.jumpToFrame(2)
+    viewer.current_movie.setPaused(True)
+    assert viewer.current_movie.currentFrameNumber() == 2
+    assert viewer.current_movie.state() == QMovie.MovieState.Paused
+
+    viewer.closeEvent(QCloseEvent())
+
+    assert viewer.current_movie is None
+    viewer.show_window()
+    movie = viewer.current_movie
+    assert movie is not None
+    assert movie.currentFrameNumber() == 2
+    assert movie.state() == QMovie.MovieState.Paused
+
+
+def test_tray_resume_keeps_playing_apng_frame(viewer, tmp_path) -> None:
+    from PyQt6.QtGui import QCloseEvent, QMovie
+
+    path = tmp_path / "anim.png"
+    _save_apng(path)
+    norm = os.path.normpath(str(path))
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    assert viewer._open_movie(norm)
+    assert viewer.current_movie.jumpToFrame(1)
+    assert viewer.current_movie.state() == QMovie.MovieState.Running
+
+    viewer.closeEvent(QCloseEvent())
+    viewer.show_window()
+
+    movie = viewer.current_movie
+    assert movie is not None
+    assert movie.currentFrameNumber() == 1
+    assert movie.state() == QMovie.MovieState.Running
+
+
+def test_tray_resume_shows_error_when_gif_was_deleted(viewer, tmp_path) -> None:
+    from PyQt6.QtGui import QCloseEvent
+
+    path = tmp_path / "anim.gif"
+    _save_gif(path)
+    norm = os.path.normpath(str(path))
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    assert viewer._open_movie(norm)
+
+    viewer.closeEvent(QCloseEvent())
+    path.unlink()
+    viewer.show_window()
+
+    assert viewer.current_movie is None
+    assert viewer.original_pixmap.isNull()
+    assert "見つかりません" in viewer.image_label.text()
+
+
+def test_moving_a_file_updates_its_recent_path(viewer, tmp_path, monkeypatch) -> None:
+    from hiyoko_viewer.config.constants import OK_FOLDER
+
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "a.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    viewer.image_files = [str(path)]
+    viewer.sorted_image_files = [str(path)]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    viewer.load_image_by_index = lambda: None
+
+    viewer.move_current_image_and_load_next(OK_FOLDER)
+
+    destination = os.path.normpath(str(tmp_path / OK_FOLDER / "a.png"))
+    assert viewer._recent_files == [destination]
+
+
+def test_deleting_a_file_removes_it_from_recent_files(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "a.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    viewer.image_files = [str(path)]
+    viewer.sorted_image_files = [str(path)]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    viewer.load_image_by_index = lambda: None
+
+    viewer.delete_current_image_and_load_next()
+
+    assert viewer._recent_files == []
