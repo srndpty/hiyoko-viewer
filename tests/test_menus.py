@@ -492,6 +492,72 @@ def test_opening_a_file_adds_it_only_after_it_loads(viewer, tmp_path, monkeypatc
     assert _MemorySettings.written["recent_files"] == [norm]
 
 
+def test_recent_file_stores_an_absolute_path(viewer, tmp_path, monkeypatch) -> None:
+    from PIL import Image
+    from PyQt6.QtGui import QImage
+
+    _use_memory_settings(monkeypatch)
+    folder = tmp_path / "images"
+    folder.mkdir()
+    path = folder / "photo.png"
+    Image.new("RGB", (2, 2), "red").save(path)
+    absolute = os.path.normpath(str(path))
+    monkeypatch.chdir(tmp_path)
+    relative = os.path.join("images", "photo.png")
+
+    viewer.load_image_from_path(relative)
+    listed = os.path.normpath(relative)
+    viewer.image_files = [listed]
+    viewer.current_index = 0
+    viewer.update_image_display(viewer._load_generation, listed, QImage(absolute))
+
+    assert viewer._recent_files == [absolute]
+    assert os.path.isabs(absolute)
+
+    monkeypatch.chdir(folder)
+    opened: list[str] = []
+    viewer.load_image_from_path = opened.append
+    viewer._open_recent_file(viewer._recent_files[0])
+    viewer._remember_recent_file("photo.png")
+
+    assert opened == [absolute]
+    assert viewer._recent_files == [absolute]
+
+
+def test_move_and_delete_match_recent_files_as_absolute_paths(
+    viewer, tmp_path, monkeypatch
+) -> None:
+    from hiyoko_viewer.config.constants import OK_FOLDER
+
+    _use_memory_settings(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    kept = tmp_path / "keep.png"
+    removed = tmp_path / "drop.png"
+    kept.write_bytes(b"x")
+    removed.write_bytes(b"x")
+    viewer._remember_recent_file("keep.png")
+    viewer._remember_recent_file("drop.png")
+    viewer.image_files = ["keep.png"]
+    viewer.sorted_image_files = ["keep.png"]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    viewer.load_image_by_index = lambda: None
+
+    viewer.move_current_image_and_load_next(OK_FOLDER)
+
+    destination = os.path.normpath(str(tmp_path / OK_FOLDER / "keep.png"))
+    assert viewer._recent_files[0] == os.path.normpath(str(removed))
+    assert destination in viewer._recent_files
+    assert os.path.isabs(destination)
+
+    viewer.image_files = ["drop.png"]
+    viewer.sorted_image_files = ["drop.png"]
+    viewer.current_index = 0
+    viewer.delete_current_image_and_load_next()
+
+    assert viewer._recent_files == [destination]
+
+
 def test_broken_file_is_not_added_to_recent_files(viewer, tmp_path, monkeypatch) -> None:
     from PyQt6.QtGui import QImage
 

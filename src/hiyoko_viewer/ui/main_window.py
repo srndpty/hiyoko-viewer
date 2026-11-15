@@ -76,6 +76,11 @@ def _numpad_sequence(key: Qt.Key) -> QKeySequence:
     return QKeySequence(key | Qt.KeyboardModifier.KeypadModifier)
 
 
+def _recent_storage_path(file_path: str) -> str:
+    """履歴に残すパス。作業ディレクトリが変わっても同じファイルを指す。"""
+    return os.path.normpath(os.path.abspath(file_path))
+
+
 def _coerce_recent_files(raw: object) -> list[str]:
     """QSettings の値を、重複なし・新しい順のパス一覧にする。"""
     if isinstance(raw, str):
@@ -512,9 +517,13 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         """読み込めたファイルを履歴の先頭に足す。矢印での画像送りはここを通らない。"""
         if not file_path or not os.path.isfile(file_path):
             return
-        path = os.path.normpath(file_path)
+        path = _recent_storage_path(file_path)
         key = os.path.normcase(path)
-        kept = [item for item in self._recent_files if os.path.normcase(item) != key]
+        kept = [
+            item
+            for item in self._recent_files
+            if os.path.normcase(_recent_storage_path(item)) != key
+        ]
         updated = [path, *kept][:RECENT_FILE_LIMIT]
         if updated == self._recent_files:
             return
@@ -523,8 +532,12 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self._rebuild_recent_menu()
 
     def _forget_recent_file(self, file_path: str) -> None:
-        key = os.path.normcase(os.path.normpath(file_path))
-        kept = [item for item in self._recent_files if os.path.normcase(item) != key]
+        key = os.path.normcase(_recent_storage_path(file_path))
+        kept = [
+            item
+            for item in self._recent_files
+            if os.path.normcase(_recent_storage_path(item)) != key
+        ]
         if kept == self._recent_files:
             return
         self._recent_files = kept
@@ -533,12 +546,12 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
 
     def _retarget_recent_file(self, old_path: str, new_path: str) -> None:
         """アプリ自身が移動したファイルは、履歴のパスだけ差し替える。"""
-        old_key = os.path.normcase(os.path.normpath(old_path))
-        new_norm = os.path.normpath(new_path)
+        old_key = os.path.normcase(_recent_storage_path(old_path))
+        new_norm = _recent_storage_path(new_path)
         updated: list[str] = []
         changed = False
         for item in self._recent_files:
-            if os.path.normcase(item) == old_key:
+            if os.path.normcase(_recent_storage_path(item)) == old_key:
                 updated.append(new_norm)
                 changed = True
             else:
