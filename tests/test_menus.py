@@ -73,6 +73,7 @@ def test_menu_bar_registers_commands_with_unique_mnemonics(viewer) -> None:
     expected = {
         "ファイル(&F)": [
             "開く(&O)...",
+            "最近開いたファイル(&R)",
             "エクスプローラーで表示(&E)",
             "_ok フォルダへ移動(&K)",
             "_ng フォルダへ移動(&N)",
@@ -442,3 +443,354 @@ def test_right_click_on_image_opens_context_menu(viewer, monkeypatch) -> None:
     event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), QPoint(100, 200))
     QApplication.sendEvent(label, event)
     assert shown == [QPoint(100, 200)]
+
+
+class _MemorySettings:
+    values: dict[str, object] = {}
+    written: dict[str, object] = {}
+
+    def __init__(self, organization: str, application: str) -> None:
+        self.organization = organization
+        self.application = application
+
+    def value(self, key: str, default=None, type=None):
+        return self.values.get(key, default)
+
+    def setValue(self, key: str, value: object) -> None:
+        self.values[key] = value
+        self.written[key] = value
+
+
+def _use_memory_settings(monkeypatch) -> None:
+    _MemorySettings.values = {}
+    _MemorySettings.written = {}
+    monkeypatch.setattr(main_window, "QSettings", _MemorySettings)
+
+
+def _recent_labels(viewer: ImageViewer) -> list[str]:
+    return [action.text() for action in viewer.recent_menu.actions() if not action.isSeparator()]
+
+
+def test_opening_a_file_adds_it_only_after_it_loads(viewer, tmp_path, monkeypatch) -> None:
+    from PIL import Image
+    from PyQt6.QtGui import QImage
+
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "chick.png"
+    Image.new("RGB", (2, 2), "red").save(path)
+    norm = os.path.normpath(str(path))
+
+    viewer.load_image_from_path(norm)
+
+    assert viewer._recent_files == []
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.update_image_display(viewer._load_generation, norm, QImage(norm))
+
+    assert viewer._recent_files == [norm]
+    assert _recent_labels(viewer)[0].endswith("chick.png")
+    assert _MemorySettings.written["recent_files"] == [norm]
+
+
+def test_recent_file_stores_an_absolute_path(viewer, tmp_path, monkeypatch) -> None:
+    from PIL import Image
+    from PyQt6.QtGui import QImage
+
+    _use_memory_settings(monkeypatch)
+    folder = tmp_path / "images"
+    folder.mkdir()
+    path = folder / "photo.png"
+    Image.new("RGB", (2, 2), "red").save(path)
+    absolute = os.path.normpath(str(path))
+    monkeypatch.chdir(tmp_path)
+    relative = os.path.join("images", "photo.png")
+
+    viewer.load_image_from_path(relative)
+    listed = os.path.normpath(relative)
+    viewer.image_files = [listed]
+    viewer.current_index = 0
+    viewer.update_image_display(viewer._load_generation, listed, QImage(absolute))
+
+    assert viewer._recent_files == [absolute]
+    assert os.path.isabs(absolute)
+
+    monkeypatch.chdir(folder)
+    opened: list[str] = []
+    viewer.load_image_from_path = opened.append
+    viewer._open_recent_file(viewer._recent_files[0])
+    viewer._remember_recent_file("photo.png")
+
+    assert opened == [absolute]
+    assert viewer._recent_files == [absolute]
+
+
+def test_move_and_delete_match_recent_files_as_absolute_paths(
+    viewer, tmp_path, monkeypatch
+) -> None:
+    from hiyoko_viewer.config.constants import OK_FOLDER
+
+    _use_memory_settings(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    kept = tmp_path / "keep.png"
+    removed = tmp_path / "drop.png"
+    kept.write_bytes(b"x")
+    removed.write_bytes(b"x")
+    viewer._remember_recent_file("keep.png")
+    viewer._remember_recent_file("drop.png")
+    viewer.image_files = ["keep.png"]
+    viewer.sorted_image_files = ["keep.png"]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    viewer.load_image_by_index = lambda: None
+
+    viewer.move_current_image_and_load_next(OK_FOLDER)
+
+    destination = os.path.normpath(str(tmp_path / OK_FOLDER / "keep.png"))
+    assert viewer._recent_files[0] == os.path.normpath(str(removed))
+    assert destination in viewer._recent_files
+    assert os.path.isabs(destination)
+
+    viewer.image_files = ["drop.png"]
+    viewer.sorted_image_files = ["drop.png"]
+    viewer.current_index = 0
+    viewer.delete_current_image_and_load_next()
+
+    assert viewer._recent_files == [destination]
+
+
+def test_broken_file_is_not_added_to_recent_files(viewer, tmp_path, monkeypatch) -> None:
+    from PyQt6.QtGui import QImage
+
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "bad.webp"
+    path.write_bytes(b"x")
+    norm = os.path.normpath(str(path))
+
+    viewer.load_image_from_path(norm)
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.update_image_display(viewer._load_generation, norm, QImage())
+
+    assert viewer._recent_files == []
+    assert viewer._pending_recent_file is None
+
+
+def test_recent_menu_puts_newest_first_and_drops_the_oldest(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    paths = []
+    for index in range(main_window.RECENT_FILE_LIMIT + 1):
+        path = tmp_path / f"{index}.png"
+        path.write_bytes(b"x")
+        paths.append(path)
+        viewer._remember_recent_file(str(path))
+
+    assert viewer._recent_files[0] == os.path.normpath(str(paths[-1]))
+    assert os.path.normpath(str(paths[0])) not in viewer._recent_files
+    assert len(viewer._recent_files) == main_window.RECENT_FILE_LIMIT
+    labels = _recent_labels(viewer)
+    assert labels[0].endswith(paths[-1].name)
+    assert labels[-1] == "履歴を消去(&C)"
+    keys = _mnemonics(viewer.recent_menu.actions())
+    assert len(keys) == len(set(keys))
+
+
+def test_recent_menu_shows_parent_when_basenames_match(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    one = tmp_path / "one" / "x.png"
+    two = tmp_path / "two" / "x.png"
+    one.parent.mkdir()
+    two.parent.mkdir()
+    one.write_bytes(b"a")
+    two.write_bytes(b"b")
+
+    viewer._remember_recent_file(str(one))
+    viewer._remember_recent_file(str(two))
+
+    labels = _recent_labels(viewer)
+    assert "x.png (two)" in labels[0]
+    assert "x.png (one)" in labels[1]
+
+
+def test_recent_menu_escapes_ampersand_in_file_name(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "a&b.png"
+    path.write_bytes(b"x")
+
+    viewer._remember_recent_file(str(path))
+
+    assert "a&&b.png" in _recent_labels(viewer)[0]
+
+
+def test_recent_file_action_reopens_that_file(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "again.gif"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    opened: list[str] = []
+    viewer.load_image_from_path = opened.append
+
+    viewer.recent_menu.actions()[0].trigger()
+
+    assert opened == [os.path.normpath(str(path))]
+
+
+def test_recent_file_is_ignored_while_loading(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "busy.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    viewer.is_loading = True
+    generation = viewer._load_generation
+
+    viewer._open_recent_file(str(path))
+
+    assert viewer._load_generation == generation
+    assert viewer._recent_files == [os.path.normpath(str(path))]
+
+
+def test_missing_recent_file_is_removed(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "gone.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    path.unlink()
+
+    viewer._open_recent_file(str(path))
+
+    assert viewer._recent_files == []
+    assert _recent_labels(viewer) == ["（なし）", "履歴を消去(&C)"]
+    assert "見つかりません" in viewer.statusBar().currentMessage()
+
+
+def test_clear_recent_files_empties_the_menu(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "keep.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+
+    viewer.recent_menu.actions()[-1].trigger()
+
+    assert viewer._recent_files == []
+    assert _recent_labels(viewer)[0] == "（なし）"
+    clear_action = viewer.recent_menu.actions()[-1]
+    assert clear_action.text() == "履歴を消去(&C)"
+    assert clear_action.isEnabled() is False
+
+
+def _save_gif(path, *, frames: int = 4) -> None:
+    from PIL import Image
+
+    colors = ("red", "green", "blue", "white")
+    images = [Image.new("RGB", (8, 8), colors[index % len(colors)]) for index in range(frames)]
+    images[0].save(path, save_all=True, append_images=images[1:], duration=10000, loop=0)
+
+
+def _save_apng(path) -> None:
+    from PIL import Image
+
+    frames = [Image.new("RGBA", (4, 4), color) for color in ((255, 0, 0, 255), (0, 255, 0, 255))]
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=10000, loop=0)
+
+
+def test_tray_resume_keeps_paused_gif_frame(viewer, tmp_path) -> None:
+    from PyQt6.QtGui import QCloseEvent, QMovie
+
+    path = tmp_path / "anim.gif"
+    _save_gif(path)
+    norm = os.path.normpath(str(path))
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    assert viewer._open_movie(norm)
+    # QMovie はキャッシュが無いと、0 から 2 へは直接飛べない
+    assert viewer.current_movie.jumpToFrame(1)
+    assert viewer.current_movie.jumpToFrame(2)
+    viewer.current_movie.setPaused(True)
+    assert viewer.current_movie.currentFrameNumber() == 2
+    assert viewer.current_movie.state() == QMovie.MovieState.Paused
+
+    viewer.closeEvent(QCloseEvent())
+
+    assert viewer.current_movie is None
+    viewer.show_window()
+    movie = viewer.current_movie
+    assert movie is not None
+    assert movie.currentFrameNumber() == 2
+    assert movie.state() == QMovie.MovieState.Paused
+
+
+def test_tray_resume_keeps_playing_apng_frame(viewer, tmp_path) -> None:
+    from PyQt6.QtGui import QCloseEvent, QMovie
+
+    path = tmp_path / "anim.png"
+    _save_apng(path)
+    norm = os.path.normpath(str(path))
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    assert viewer._open_movie(norm)
+    assert viewer.current_movie.jumpToFrame(1)
+    assert viewer.current_movie.state() == QMovie.MovieState.Running
+
+    viewer.closeEvent(QCloseEvent())
+    viewer.show_window()
+
+    movie = viewer.current_movie
+    assert movie is not None
+    assert movie.currentFrameNumber() == 1
+    assert movie.state() == QMovie.MovieState.Running
+
+
+def test_tray_resume_shows_error_when_gif_was_deleted(viewer, tmp_path) -> None:
+    from PyQt6.QtGui import QCloseEvent
+
+    path = tmp_path / "anim.gif"
+    _save_gif(path)
+    norm = os.path.normpath(str(path))
+    viewer.image_files = [norm]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    assert viewer._open_movie(norm)
+
+    viewer.closeEvent(QCloseEvent())
+    path.unlink()
+    viewer.show_window()
+
+    assert viewer.current_movie is None
+    assert viewer.original_pixmap.isNull()
+    assert "見つかりません" in viewer.image_label.text()
+
+
+def test_moving_a_file_updates_its_recent_path(viewer, tmp_path, monkeypatch) -> None:
+    from hiyoko_viewer.config.constants import OK_FOLDER
+
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "a.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    viewer.image_files = [str(path)]
+    viewer.sorted_image_files = [str(path)]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    viewer.load_image_by_index = lambda: None
+
+    viewer.move_current_image_and_load_next(OK_FOLDER)
+
+    destination = os.path.normpath(str(tmp_path / OK_FOLDER / "a.png"))
+    assert viewer._recent_files == [destination]
+
+
+def test_deleting_a_file_removes_it_from_recent_files(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "a.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    viewer.image_files = [str(path)]
+    viewer.sorted_image_files = [str(path)]
+    viewer.current_index = 0
+    viewer.is_loading = False
+    viewer.load_image_by_index = lambda: None
+
+    viewer.delete_current_image_and_load_next()
+
+    assert viewer._recent_files == []

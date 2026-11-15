@@ -90,8 +90,19 @@ class InputEventMixin:
         self.update_status_bar()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """ウィンドウを非表示にしてトレイに格納する（セッションは保持）"""
+        """ウィンドウを非表示にしてトレイに格納する（セッションは保持）。
+
+        プロセスは残る。GIF / アニメーション WebP の QMovie と APNG は元ファイルを
+        開いたままにするので、隠す前にハンドルを離す。再表示で再生を再開する。
+        """
         event.ignore()
+        if self.current_movie is not None:
+            # stop すると一時停止やフレーム番号が失われるので、離す前に控える
+            remember_playback = getattr(self, "_remember_suspended_playback", None)
+            if remember_playback is not None:
+                remember_playback()
+            self._resume_movie_on_show = True
+        self._release_current_file_handles()
         self.hide()
 
     def _handle_wheel_event(self, event: QWheelEvent) -> bool:

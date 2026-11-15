@@ -4,6 +4,9 @@
 等幅フォントの中ではセル境界まで塗れる。ステータスバーはプロポーショナルな
 UI フォントなので、文字の間に隙間や別フォントへのフォールバックが出る。
 ここでは 240px の矩形をピクセル単位で塗る。
+
+塗りは単色で、その色は進行度で決まる。進行度 0% のシアンから
+100% のマゼンタへ線形に変わる。
 """
 
 from __future__ import annotations
@@ -17,7 +20,9 @@ BAR_HEIGHT = 14
 # drawRect の 1px 枠の内側
 _INNER_INSET = 1
 
-FILL_COLOR = "#F6C445"
+# 純色のシアン・マゼンタは目に刺さるので、彩度と明度を少し落としている
+FILL_START_COLOR = "#40C8D2"  # 進行度 0%
+FILL_END_COLOR = "#D250C8"  # 進行度 100%
 TRACK_COLOR = "#454545"
 BORDER_COLOR = "#9A9A9A"
 
@@ -35,6 +40,18 @@ def filled_pixel_width(current: int, total: int, inner_width: int) -> int:
     if filled <= 0:
         return 1
     return min(filled, inner_width)
+
+
+def fill_color_at(ratio: float) -> QColor:
+    """進行度 ratio (0.0〜1.0) の塗り色。シアンからマゼンタへ RGB で線形補間する。"""
+    ratio = min(1.0, max(0.0, ratio))
+    start = QColor(FILL_START_COLOR)
+    end = QColor(FILL_END_COLOR)
+    return QColor(
+        round(start.red() + (end.red() - start.red()) * ratio),
+        round(start.green() + (end.green() - start.green()) * ratio),
+        round(start.blue() + (end.blue() - start.blue()) * ratio),
+    )
 
 
 def set_frame_progress(
@@ -99,5 +116,5 @@ class FrameProgressBar(QWidget):
             _INNER_INSET,
             filled,
             height - (_INNER_INSET * 2),
-            QColor(FILL_COLOR),
+            fill_color_at(self._current / self._total),
         )
