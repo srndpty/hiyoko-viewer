@@ -493,6 +493,36 @@ def test_load_image_from_path_ignores_empty_path() -> None:
     ImageViewer.load_image_from_path(viewer, "")
 
 
+def test_load_image_from_path_records_the_opened_file(tmp_path) -> None:
+    emitter = _Emitter()
+    remembered: list[str] = []
+    image_path = tmp_path / "Photo.PNG"
+    image_path.write_bytes(b"x")
+    viewer = SimpleNamespace(request_load_list=emitter, _load_generation=0)
+    viewer._clear_display = lambda: None
+    viewer._remember_recent_file = remembered.append
+
+    ImageViewer.load_image_from_path(viewer, str(image_path).replace(os.sep, "/"))
+
+    assert remembered == [os.path.normpath(str(image_path))]
+
+
+def test_show_next_image_does_not_record_a_recent_file() -> None:
+    remembered: list[str] = []
+    viewer = SimpleNamespace(
+        is_loading=False,
+        image_files=["a.png", "b.png"],
+        current_index=0,
+    )
+    viewer.load_image_by_index = lambda: None
+    viewer._remember_recent_file = remembered.append
+
+    ImageViewer.show_next_image(viewer)
+
+    assert viewer.current_index == 1
+    assert remembered == []
+
+
 def test_on_file_list_loaded_sets_error_text_for_empty_list() -> None:
     label = _ImageLabel()
     viewer = SimpleNamespace(image_label=label, _load_generation=0)
@@ -1379,6 +1409,51 @@ def test_clear_display_resets_viewer_state(monkeypatch) -> None:
     assert status_bar.messages == [("", None)]
     assert frame_progress.values == [(0, 0)]
     assert titles == [constants.DEFAULT_TITLE]
+
+
+def test_coerce_recent_files_dedupes_and_caps() -> None:
+    path = os.path.join("dir", "b.png")
+    many = [f"{index}.png" for index in range(main_window.RECENT_FILE_LIMIT + 3)]
+
+    assert main_window._coerce_recent_files([path, path, "a.gif", "", None]) == [
+        os.path.normpath(path),
+        os.path.normpath("a.gif"),
+    ]
+    assert main_window._coerce_recent_files("only.png") == [os.path.normpath("only.png")]
+    assert main_window._coerce_recent_files(None) == []
+    assert len(main_window._coerce_recent_files(many)) == main_window.RECENT_FILE_LIMIT
+    assert main_window._coerce_recent_files(many)[0] == os.path.normpath(many[0])
+
+
+def test_recent_file_label_numbers_and_escapes() -> None:
+    assert main_window._recent_file_label(os.path.join("dir", "a.png"), 0, False) == "&1 a.png"
+    assert main_window._recent_file_label(os.path.join("dir", "a&b.png"), 9, False) == "&0 a&&b.png"
+    labeled = main_window._recent_file_label(os.path.join("folder", "a.png"), 1, True)
+    assert labeled == "&2 a.png (folder)"
+
+
+def test_load_settings_restores_recent_files(qapp, monkeypatch) -> None:
+    from PyQt6.QtWidgets import QMenu
+
+    _Settings.values = {
+        "main_window/maximized": "false",
+        "recent_files": [os.path.join("dir", "b.png"), os.path.join("dir", "b.png"), "a.gif"],
+    }
+    monkeypatch.setattr(main_window, "QSettings", _Settings)
+    menu = QMenu()
+    viewer = SimpleNamespace(recent_menu=menu)
+    viewer.showMaximized = lambda: (_ for _ in ()).throw(AssertionError)
+    viewer._rebuild_recent_menu = lambda: ImageViewer._rebuild_recent_menu(viewer)
+    viewer._open_recent_file = lambda path: None
+    viewer._clear_recent_files = lambda: None
+
+    ImageViewer._load_settings(viewer)
+
+    assert viewer._recent_files == [os.path.normpath(os.path.join("dir", "b.png")), "a.gif"]
+    labels = [action.text() for action in menu.actions() if not action.isSeparator()]
+    assert labels[0].endswith("b.png")
+    assert labels[1].endswith("a.gif")
+    menu.deleteLater()
 
 
 def test_load_settings_restores_maximized_window(monkeypatch) -> None:

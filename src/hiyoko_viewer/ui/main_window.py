@@ -67,10 +67,50 @@ TRAY_SETUP_INITIAL_DELAY_MS = 1000
 TRAY_SETUP_RETRY_DELAY_MS = 5000
 TRAY_SETUP_MAX_ATTEMPTS = 5
 
+# ファイルメニューに出す「最近開いたファイル」の件数
+RECENT_FILE_LIMIT = 10
+
 
 def _numpad_sequence(key: Qt.Key) -> QKeySequence:
     """テンキーだけに反応するショートカット。本体の数字キーとは分ける。"""
     return QKeySequence(key | Qt.KeyboardModifier.KeypadModifier)
+
+
+def _coerce_recent_files(raw: object) -> list[str]:
+    """QSettings の値を、重複なし・新しい順のパス一覧にする。"""
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, list | tuple):
+        items = [str(item) for item in raw if item]
+    else:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        path = os.path.normpath(item)
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+        if len(result) >= RECENT_FILE_LIMIT:
+            break
+    return result
+
+
+def _recent_file_label(path: str, index: int, duplicate_basename: bool) -> str:
+    """メニュー項目のラベル。先頭の数字がアクセスキー。ファイル名中の & はエスケープする。"""
+    name = os.path.basename(path)
+    if duplicate_basename:
+        parent = os.path.dirname(path)
+        parent_name = os.path.basename(parent) or parent
+        name = f"{name} ({parent_name})"
+    visible = name.replace("&", "&&")
+    if index < 9:
+        return f"&{index + 1} {visible}"
+    if index == 9:
+        return f"&0 {visible}"
+    return visible
 
 
 class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow):
@@ -144,6 +184,7 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         self._was_maximized_before_fullscreen: bool = False
         self.tray_icon = None
         self._tray_setup_attempts = 0
+        self._recent_files: list[str] = []
 
     def _setup_ui(self) -> None:
         """UIコンポーネントのセットアップを行う"""
@@ -192,6 +233,8 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         file_menu = menu.addMenu("ファイル(&F)")
         self.open_action = file_menu.addAction("開く(&O)...")
         self.open_action.setShortcut(QKeySequence("Ctrl+O"))
+        self.recent_menu = file_menu.addMenu("最近開いたファイル(&R)")
+        self._rebuild_recent_menu()
         self.reveal_action = file_menu.addAction("エクスプローラーで表示(&E)")
         file_menu.addSeparator()
         self.move_ok_action = file_menu.addAction("_ok フォルダへ移動(&K)")
@@ -405,6 +448,73 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
         dialog_filter = f"対応画像ファイル ({filter_str});;すべてのファイル (*)"
         file_path, _ = QFileDialog.getOpenFileName(self, "画像ファイルを開く", "", dialog_filter)
         self.load_image_from_path(file_path)
+
+    def _remember_recent_file(self, file_path: str) -> None:
+        """開いたファイルを履歴の先頭に足す。矢印での画像送りはここを通らない。"""
+        if not file_path or not os.path.isfile(file_path):
+            return
+        path = os.path.normpath(file_path)
+        key = os.path.normcase(path)
+        kept = [item for item in self._recent_files if os.path.normcase(item) != key]
+        updated = [path, *kept][:RECENT_FILE_LIMIT]
+        if updated == self._recent_files:
+            return
+        self._recent_files = updated
+        self._save_recent_files()
+        self._rebuild_recent_menu()
+
+    def _forget_recent_file(self, file_path: str) -> None:
+        key = os.path.normcase(os.path.normpath(file_path))
+        kept = [item for item in self._recent_files if os.path.normcase(item) != key]
+        if kept == self._recent_files:
+            return
+        self._recent_files = kept
+        self._save_recent_files()
+        self._rebuild_recent_menu()
+
+    def _clear_recent_files(self) -> None:
+        if not self._recent_files:
+            return
+        self._recent_files = []
+        self._save_recent_files()
+        self._rebuild_recent_menu()
+
+    def _open_recent_file(self, file_path: str) -> None:
+        if self.is_loading:
+            return
+        if not os.path.isfile(file_path):
+            self._forget_recent_file(file_path)
+            name = os.path.basename(file_path)
+            self.statusBar().showMessage(f"ファイルが見つかりません: {name}", 3000)
+            return
+        self.load_image_from_path(file_path)
+
+    def _rebuild_recent_menu(self) -> None:
+        menu = self.recent_menu
+        menu.clear()
+        if not self._recent_files:
+            empty = menu.addAction("（なし）")
+            empty.setEnabled(False)
+        else:
+            basename_keys = [
+                os.path.normcase(os.path.basename(path)) for path in self._recent_files
+            ]
+            for index, path in enumerate(self._recent_files):
+                duplicate = basename_keys.count(os.path.normcase(os.path.basename(path))) > 1
+                action = menu.addAction(_recent_file_label(path, index, duplicate))
+                action.setToolTip(path)
+                action.setStatusTip(path)
+                action.triggered.connect(
+                    lambda _checked=False, path=path: self._open_recent_file(path)
+                )
+        menu.addSeparator()
+        clear_action = menu.addAction("履歴を消去(&C)")
+        clear_action.setEnabled(bool(self._recent_files))
+        clear_action.triggered.connect(self._clear_recent_files)
+
+    def _save_recent_files(self) -> None:
+        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        settings.setValue("recent_files", self._recent_files)
 
     def _sync_action_states(self) -> None:
         """メニューの見た目を、実行できる操作と揃える。
@@ -647,6 +757,10 @@ class ImageViewer(RenderingMixin, NavigationMixin, InputEventMixin, QMainWindow)
                 restored = self.restoreGeometry(geometry)
                 logger.info("restoreGeometry returned %s -> %s", restored, self.geometry())
                 self._ensure_on_screen()
+
+        self._recent_files = _coerce_recent_files(settings.value("recent_files", []))
+        if getattr(self, "recent_menu", None) is not None:
+            self._rebuild_recent_menu()
 
     def _ensure_on_screen(self) -> None:
         """復元したジオメトリが実質的に画面外なら、既定位置に戻す（多重防御）。

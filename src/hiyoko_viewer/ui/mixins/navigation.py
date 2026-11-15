@@ -32,6 +32,9 @@ class NavigationMixin:
         # send2trash が付ける \\?\ 接頭辞付きでは / が区切りと解釈されず削除に失敗するため、
         # 入口でネイティブ区切りに正規化しておく。
         file_path = os.path.normpath(file_path)
+        remember = getattr(self, "_remember_recent_file", None)
+        if remember is not None:
+            remember(file_path)
         directory = os.path.dirname(file_path)
         normalized_path = os.path.normcase(file_path)
         self.request_load_list.emit(generation, directory, normalized_path)

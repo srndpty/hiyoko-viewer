@@ -73,6 +73,7 @@ def test_menu_bar_registers_commands_with_unique_mnemonics(viewer) -> None:
     expected = {
         "ファイル(&F)": [
             "開く(&O)...",
+            "最近開いたファイル(&R)",
             "エクスプローラーで表示(&E)",
             "_ok フォルダへ移動(&K)",
             "_ng フォルダへ移動(&N)",
@@ -442,3 +443,143 @@ def test_right_click_on_image_opens_context_menu(viewer, monkeypatch) -> None:
     event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), QPoint(100, 200))
     QApplication.sendEvent(label, event)
     assert shown == [QPoint(100, 200)]
+
+
+class _MemorySettings:
+    values: dict[str, object] = {}
+    written: dict[str, object] = {}
+
+    def __init__(self, organization: str, application: str) -> None:
+        self.organization = organization
+        self.application = application
+
+    def value(self, key: str, default=None, type=None):
+        return self.values.get(key, default)
+
+    def setValue(self, key: str, value: object) -> None:
+        self.values[key] = value
+        self.written[key] = value
+
+
+def _use_memory_settings(monkeypatch) -> None:
+    _MemorySettings.values = {}
+    _MemorySettings.written = {}
+    monkeypatch.setattr(main_window, "QSettings", _MemorySettings)
+
+
+def _recent_labels(viewer: ImageViewer) -> list[str]:
+    return [action.text() for action in viewer.recent_menu.actions() if not action.isSeparator()]
+
+
+def test_opening_a_file_adds_it_to_the_recent_menu(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "chick.webp"
+    path.write_bytes(b"x")
+
+    viewer.load_image_from_path(str(path))
+
+    assert viewer._recent_files == [os.path.normpath(str(path))]
+    assert _recent_labels(viewer)[0].endswith("chick.webp")
+    assert _MemorySettings.written["recent_files"] == [os.path.normpath(str(path))]
+
+
+def test_recent_menu_puts_newest_first_and_drops_the_oldest(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    paths = []
+    for index in range(main_window.RECENT_FILE_LIMIT + 1):
+        path = tmp_path / f"{index}.png"
+        path.write_bytes(b"x")
+        paths.append(path)
+        viewer._remember_recent_file(str(path))
+
+    assert viewer._recent_files[0] == os.path.normpath(str(paths[-1]))
+    assert os.path.normpath(str(paths[0])) not in viewer._recent_files
+    assert len(viewer._recent_files) == main_window.RECENT_FILE_LIMIT
+    labels = _recent_labels(viewer)
+    assert labels[0].endswith(paths[-1].name)
+    assert labels[-1] == "履歴を消去(&C)"
+    keys = _mnemonics(viewer.recent_menu.actions())
+    assert len(keys) == len(set(keys))
+
+
+def test_recent_menu_shows_parent_when_basenames_match(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    one = tmp_path / "one" / "x.png"
+    two = tmp_path / "two" / "x.png"
+    one.parent.mkdir()
+    two.parent.mkdir()
+    one.write_bytes(b"a")
+    two.write_bytes(b"b")
+
+    viewer._remember_recent_file(str(one))
+    viewer._remember_recent_file(str(two))
+
+    labels = _recent_labels(viewer)
+    assert "x.png (two)" in labels[0]
+    assert "x.png (one)" in labels[1]
+
+
+def test_recent_menu_escapes_ampersand_in_file_name(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "a&b.png"
+    path.write_bytes(b"x")
+
+    viewer._remember_recent_file(str(path))
+
+    assert "a&&b.png" in _recent_labels(viewer)[0]
+
+
+def test_recent_file_action_reopens_that_file(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "again.gif"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    opened: list[str] = []
+    viewer.load_image_from_path = opened.append
+
+    viewer.recent_menu.actions()[0].trigger()
+
+    assert opened == [os.path.normpath(str(path))]
+
+
+def test_recent_file_is_ignored_while_loading(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "busy.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    viewer.is_loading = True
+    generation = viewer._load_generation
+
+    viewer._open_recent_file(str(path))
+
+    assert viewer._load_generation == generation
+    assert viewer._recent_files == [os.path.normpath(str(path))]
+
+
+def test_missing_recent_file_is_removed(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "gone.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+    path.unlink()
+
+    viewer._open_recent_file(str(path))
+
+    assert viewer._recent_files == []
+    assert _recent_labels(viewer) == ["（なし）", "履歴を消去(&C)"]
+    assert "見つかりません" in viewer.statusBar().currentMessage()
+
+
+def test_clear_recent_files_empties_the_menu(viewer, tmp_path, monkeypatch) -> None:
+    _use_memory_settings(monkeypatch)
+    path = tmp_path / "keep.png"
+    path.write_bytes(b"x")
+    viewer._remember_recent_file(str(path))
+
+    viewer.recent_menu.actions()[-1].trigger()
+
+    assert viewer._recent_files == []
+    assert _recent_labels(viewer)[0] == "（なし）"
+    clear_action = viewer.recent_menu.actions()[-1]
+    assert clear_action.text() == "履歴を消去(&C)"
+    assert clear_action.isEnabled() is False
